@@ -86,7 +86,7 @@ class Detect(nn.Module):
         for f in feats:
             mb, mc, mo = self.main(f)
             level = {"main": (mb, mc, mo), "aux": None}
-            if with_aux:
+            if with_aux and self.aux is not None:
                 level["aux"] = self.aux(f)
             out.append(level)
         return out
