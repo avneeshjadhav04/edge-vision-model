@@ -1,0 +1,18 @@
+# Pascal VOC phase (20 classes, train on 07+12 trainval, test on 2007 test)
+name: voc
+dataset: voc
+num_classes: 20
+root: ./datasets/VOC
+years_train: ["2007", "2012"]
+year_test: "2007"
+test_set: test
+class_names: [
+  aeroplane, bicycle, bird, boat, bottle, bus, car, cat, chair, cow,
+  diningtable, dog, horse, motorbike, person, pottedplant, sheep, sofa, train, tvmonitor
+]
+image_size: 640
+batch_size: 32
+epochs: 120
+overfit_n: 20            # overfit sanity subset size
+overfit_epochs: 300
+overfit_target_map: 0.90 # success bar for scripts/overfit_test.py

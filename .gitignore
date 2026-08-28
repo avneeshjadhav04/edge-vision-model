@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Training artifacts
+runs/
+checkpoints/
+datasets/
+*.pt
+*.pth
+*.onnx
+*.xml
+*.bin
+*.engine
+*.tflite
+*.param
+*.caffemodel
+
+# Logs / caches
+logs/
+*.log
+wandb/
+.lightning/
+.vector_cache/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Allow placeholder notes
+!.license-placeholder-note

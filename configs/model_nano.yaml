@@ -1,0 +1,58 @@
+# Edge Vision Model (EVM) — nano detector, NMS-free, CPU-first.
+# ~2.4M params / ~5 GFLOPs @ 640. All channels divisible by 16 for INT8-friendly layout.
+name: evm_nano
+input_size: 640
+num_classes: 80          # overridden per dataset config (20 for VOC)
+max_boxes: 160
+
+backbone:
+  stem_channels: 32
+  out_channels: [64, 128, 256]   # P3/P4/P5 channels after stride-4 stage
+  depth: [2, 2, 2]               # csp-lite block repeats per stage
+  depthwise: false               # plain 3x3/1x1 only (CPU-friendly on x86)
+
+neck:
+  hidden: 96                     # PAN-lite fused width
+  out: 96
+
+head:
+  type: dual                     # dual assignment: one-to-many aux + one-to-one main
+  reg_max: 8                     # DFL bins per box side (4*reg_max channels)
+  aux_hidden: 96                 # aux one-to-many branch width (training only)
+  num_heads: 4                   # anchors per position on the main (o2o) head grid
+
+loss:
+  box_weight: 7.5
+  cls_weight: 0.5
+  dfl_weight: 1.5
+  obj_weight: 1.0                # objectness BCE on main head
+  o2m_topk: 10                   # top-k candidates for the one-to-many aux matcher
+  alpha: 0.5                     # task-aligned matcher cost weights
+  beta: 6.0
+
+train:
+  img_size: 640
+  batch_size: 64
+  epochs_voc: 120
+  epochs_coco: 300
+  mosaic: 1.0
+  mosaic_close_epochs: 10        # disable mosaic for last N epochs
+  mixup: 0.1
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
+  fliplr: 0.5
+  scale_jitter: 0.5
+  translate: 0.1
+  optimizer: sgd
+  lr0: 0.05
+  lrf: 0.01
+  momentum: 0.937
+  weight_decay: 0.0005
+  warmup_epochs: 3
+  warmup_bias_lr: 0.1
+  ema_decay: 0.9999
+  amp: true
+  accum: 1
+  val_interval: 2
+  workers: 8

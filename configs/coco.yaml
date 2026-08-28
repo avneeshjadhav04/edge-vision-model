@@ -1,0 +1,12 @@
+# COCO phase (80 classes, train2017 -> val2017)
+name: coco
+dataset: coco
+num_classes: 80
+root: ./datasets/coco
+train_year: 2017
+val_year: 2017
+image_size: 640
+batch_size: 64
+epochs: 300
+# reference point for honest comparison (reported by Ultralytics, not ours)
+baseline_yolo26n_map: 0.409
