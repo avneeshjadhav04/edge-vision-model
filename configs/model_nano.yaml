@@ -12,13 +12,14 @@ backbone:
   depthwise: false               # plain 3x3/1x1 only (CPU-friendly on x86)
 
 neck:
-  hidden: 96                     # PAN-lite fused width
-  out: 96
+  hidden: 64                     # PAN-lite fused width
+  out: 64
 
 head:
   type: dual                     # dual assignment: one-to-many aux + one-to-one main
+  hidden: 64                     # main head branch width
   reg_max: 8                     # DFL bins per box side (4*reg_max channels)
-  aux_hidden: 96                 # aux one-to-many branch width (training only)
+  aux_hidden: 64                 # aux one-to-many branch width (training only)
   num_heads: 4                   # anchors per position on the main (o2o) head grid
 
 loss:
