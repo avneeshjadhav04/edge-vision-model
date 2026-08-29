@@ -11,7 +11,7 @@ in this repo.
 - **Path**: Pascal VOC (fast iteration) → COCO (honest benchmark) → ONNX → CPU runtimes
 
 > Status: code complete and unit-tested. Training runs execute in Colab — see
-> `notebooks/01_colab_training.ipynb`. Measured numbers below are filled in by the
+> `Colab_Notebook.ipynb`. Measured numbers below are filled in by the
 > notebook outputs after runs complete.
 
 ## Architecture
@@ -51,7 +51,7 @@ export/    ONNX export (aux stripped), host-side decode, ORT INT8 QDQ
 benchmarks/ ORT/OpenVINO/NCNN latency bench, webcam demo
 configs/   model_nano.yaml, voc.yaml, coco.yaml
 scripts/   overfit_test, train, eval, flops, sanity_model
-notebooks/ 01_colab_training.ipynb, 02_end_to_end.ipynb
+Colab_Notebook.ipynb / Generic_Notebook.ipynb (repo root)
 tests/     matcher/loss/data/engine unit tests (all pass)
 docs/      one-page write-up (what broke, what we learned, why NMS-free)
 ```
