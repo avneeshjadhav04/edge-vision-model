@@ -49,7 +49,13 @@ def list_voc_images(root, years=("2007", "2012"), split="trainval"):
     """Return [(img_path, xml_path)] across years."""
     items = []
     for year in years:
-        base = os.path.join(root, f"VOC{year}")
+        candidates = [os.path.join(root, f"VOC{year}"),
+                      os.path.join(root, "VOCdevkit", f"VOC{year}")]
+        base = next((c for c in candidates if os.path.isdir(c)), None)
+        if base is None:
+            raise FileNotFoundError(
+                f"VOC{year} not found under {root}; expected one of:\n  " +
+                "\n  ".join(candidates))
         txt = os.path.join(base, "ImageSets", "Main", f"{split}.txt")
         with open(txt) as f:
             for line in f:

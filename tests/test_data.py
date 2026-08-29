@@ -70,9 +70,55 @@ def test_letterbox():
     print("test_letterbox OK", r, pads)
 
 
+def test_voc_devkit_layout(tmp_root="/tmp/opencode/voc_devkit_test"):
+    """list_voc_images must resolve the standard VOCdevkit/ tar layout."""
+    import shutil
+    from data.voc import list_voc_images, parse_voc_xml, VOC_CLASSES
+    shutil.rmtree(tmp_root, ignore_errors=True)
+    base = os.path.join(tmp_root, "VOCdevkit", "VOC2007")
+    os.makedirs(os.path.join(base, "ImageSets", "Main"))
+    os.makedirs(os.path.join(base, "JPEGImages"))
+    os.makedirs(os.path.join(base, "Annotations"))
+    with open(os.path.join(base, "ImageSets", "Main", "trainval.txt"), "w") as f:
+        f.write("000012\n")
+    npjpg = np.full((32, 48, 3), 128, np.uint8)
+    import cv2
+    cv2.imwrite(os.path.join(base, "JPEGImages", "000012.jpg"), npjpg)
+    xml = f"""<annotation><size><width>48</width><height>32</height><depth>3</depth></size>
+<object><name>dog</name><difficult>0</difficult>
+<bndbox><xmin>5</xmin><ymin>5</ymin><xmax>40</xmax><ymax>28</ymax></bndbox></object></annotation>"""
+    with open(os.path.join(base, "Annotations", "000012.xml"), "w") as f:
+        f.write(xml)
+    items = list_voc_images(tmp_root, years=("2007",), split="trainval")
+    assert len(items) == 1, f"devkit layout not resolved: {items}"
+    boxes, labels, difficult = parse_voc_xml(items[0][1])
+    assert boxes.shape == (1, 4) and labels[0] == VOC_CLASSES.index("dog")
+    # flat layout (legacy fixture style) must still work
+    flat = os.path.join(tmp_root, "VOC2012")
+    os.makedirs(os.path.join(flat, "ImageSets", "Main"))
+    os.makedirs(os.path.join(flat, "JPEGImages"))
+    os.makedirs(os.path.join(flat, "Annotations"))
+    with open(os.path.join(flat, "ImageSets", "Main", "trainval.txt"), "w") as f:
+        f.write("000001\n")
+    cv2.imwrite(os.path.join(flat, "JPEGImages", "000001.jpg"), npjpg)
+    with open(os.path.join(flat, "Annotations", "000001.xml"), "w") as f:
+        f.write(xml.replace("dog", "cat"))
+    items2 = list_voc_images(tmp_root, years=("2007", "2012"), split="trainval")
+    assert len(items2) == 2
+    # missing entirely -> clear error
+    try:
+        list_voc_images("/tmp/opencode/definitely_missing_voc_root", years=("2007",), split="trainval")
+        raise SystemExit("expected FileNotFoundError")
+    except FileNotFoundError:
+        pass
+    shutil.rmtree(tmp_root)
+    print("test_voc_devkit_layout OK")
+
+
 if __name__ == "__main__":
     test_mosaic_boxes_track_objects()
     test_affine_and_photometric()
     test_train_transform_output()
     test_letterbox()
+    test_voc_devkit_layout()
     print("ALL DATA TESTS PASSED")
