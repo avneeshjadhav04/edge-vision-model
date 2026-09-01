@@ -102,6 +102,7 @@ class Trainer:
                 self.train_ds.transform.mosaic.p = 0.0 if epoch >= epochs - mosaic_close else float(self.h.get("mosaic", 1.0))
             m_it = 0.0
             t0 = time.time()
+            n_bad = 0
             self.optimizer.zero_grad(set_to_none=True)
             for it, (imgs, targets) in enumerate(dl):
                 self.it = it
@@ -113,6 +114,16 @@ class Trainer:
                     feats = self.model.neck(*self.model.backbone(imgs))
                     out = self.model.head(feats, with_aux=True)
                     loss, stats = self.loss_fn(out, feats, targets)
+                if not torch.isfinite(loss):
+                    n_bad += 1
+                    print(f"  [warn] epoch {epoch} it {it}: non-finite loss "
+                          f"({n_bad} consecutive), batch skipped")
+                    self.optimizer.zero_grad(set_to_none=True)
+                    if n_bad >= int(self.h.get("nan_abort", 20)):
+                        raise RuntimeError(
+                            f"training diverged: {n_bad} consecutive non-finite losses")
+                    continue
+                n_bad = 0
                 self.scaler.scale(loss / accum).backward()
                 if (it + 1) % accum == 0 or it == n_it - 1:
                     self.scaler.step(self.optimizer)

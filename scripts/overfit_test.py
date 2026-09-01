@@ -69,15 +69,16 @@ def main():
                          dfl_w=mcfg["loss"]["dfl_weight"], obj_w=mcfg["loss"]["obj_weight"],
                          o2m_topk=mcfg["loss"]["o2m_topk"], alpha=mcfg["loss"]["alpha"],
                          beta=mcfg["loss"]["beta"])
-    cfg = {"train": {"optimizer": "sgd", "lr0": 0.02, "lrf": 0.01, "warmup_epochs": 3,
+    cfg = {"train": {"optimizer": "adamw", "lr0": 1e-3, "lrf": 0.01, "warmup_epochs": 3,
                      "batch_size": args.batch_size, "workers": 2, "amp": True,
                      "ema_decay": 0.999, "val_interval": 10, "mosaic_close_epochs": 30,
-                     "accum": 1}}
+                     "mosaic": 0.5, "accum": 1}}
     tr = Trainer(model, crit, ds, cfg=cfg, device=args.device, save_dir=args.save_dir)
     tr.fit(args.epochs)
     ema_model = tr.ema.module
-    # final eval at train size
-    m = evaluate_overfit(ema_model, ds, args.device, args.img_size)
+    # final eval on a raw (untransformed) view of the same images
+    ds_eval = OverfitSubset(args.root, n=args.n, transform=None)
+    m = evaluate_overfit(ema_model, ds_eval, args.device, args.img_size)
     print(f"OVERFIT mAP@0.5 = {m['mAP']:.4f} (target {args.target})")
     if m["mAP"] >= args.target:
         print("PASS")
