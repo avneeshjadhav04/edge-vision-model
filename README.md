@@ -10,7 +10,7 @@ in this repo.
 - **Inference**: NMS-free — one-to-one label assignment at train time → argmax decode at deploy
 - **Path**: Pascal VOC (fast iteration) → COCO (honest benchmark) → ONNX → CPU runtimes
 
-> Status: code complete and unit-tested. Training runs execute in Colab — see
+> Status: code complete; verified via compile + import checks. Training runs execute in Colab — see
 > `Colab_Notebook.ipynb`. Measured numbers below are filled in by the
 > notebook outputs after runs complete.
 
@@ -52,7 +52,6 @@ benchmarks/ ORT/OpenVINO/NCNN latency bench, webcam demo
 configs/   model_nano.yaml, voc.yaml, coco.yaml
 scripts/   overfit_test, train, eval, flops, sanity_model
 Colab_Notebook.ipynb / Generic_Notebook.ipynb (repo root)
-tests/     matcher/loss/data/engine unit tests (all pass)
 docs/      one-page write-up (what broke, what we learned, why NMS-free)
 ```
 
