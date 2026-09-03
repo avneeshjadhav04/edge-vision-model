@@ -33,6 +33,12 @@ wandb/
 # Notebooks
 .ipynb_checkpoints/
 
+# Kaggle (token + kernel metadata are machine-local, never committed)
+kaggle.json
+.kaggle/
+access_token
+kernel-metadata.json
+
 # IDE / OS
 .vscode/
 .idea/
