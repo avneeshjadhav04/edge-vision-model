@@ -194,14 +194,15 @@ class DetectionLoss(nn.Module):
                 cls_target[bi, fg_mask, lbl] = 1.0
                 obj_target[bi, fg_mask, 0] = 1.0
 
-        # focal BCE over all anchors: down-weights easy background so the few o2o
-        # positives get real gradient (plain BCE normalized by B*N starves them).
+        # balanced BCE over all anchors: normalize positive and negative terms by
+        # their own counts so the ~50 o2o positives get full gradient weight despite
+        # the ~1950 background (plain BCE starves pos; focal gamma=2 kills neg).
         logits = pred_cls.view(B, N, self.nc)
-        p = torch.sigmoid(logits)
-        pt = torch.where(cls_target > 0, p, 1 - p)
-        focal = (1 - pt) ** self.focal_gamma
         bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="none")
-        loss_cls = (focal * bce).sum()
+        pos_mask = cls_target > 0
+        n_pos = max(1, int(pos_mask.sum()))
+        n_neg = max(1, int((~pos_mask).sum()))
+        loss_cls = bce[pos_mask].sum() / n_pos + bce[~pos_mask].sum() / n_neg
 
         # objectness BCE over all anchors
         loss_obj = F.binary_cross_entropy_with_logits(
@@ -209,10 +210,9 @@ class DetectionLoss(nn.Module):
 
         loss_box = self.box_w * loss_box / max(n_pos_main, 1)
         loss_dfl = self.dfl_w * loss_dfl / max(n_pos_main, 1)
-        # cls/obj are full-BCE over ALL anchors (B*N) - normalize by anchor count,
-        # not positives, or they dwarf the box loss and starve box regression.
+        # cls is balanced (pos/neg normalized above); obj is full-BCE over all anchors.
         n_anchors = max(1, B * N)
-        loss_cls = self.cls_w * loss_cls / n_anchors
+        loss_cls = self.cls_w * loss_cls
         loss_obj = self.obj_w * loss_obj / n_anchors
         n_imgs_pos = max(1, sum(1 for t in targets if t["boxes"].numel() > 0))
         loss_aux = self.box_w * loss_aux / n_imgs_pos
