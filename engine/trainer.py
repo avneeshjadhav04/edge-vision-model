@@ -101,6 +101,7 @@ class Trainer:
             if hasattr(self.train_ds, "transform") and hasattr(self.train_ds.transform, "mosaic"):
                 self.train_ds.transform.mosaic.p = 0.0 if epoch >= epochs - mosaic_close else float(self.h.get("mosaic", 1.0))
             m_it = 0.0
+            m_comp = {}
             t0 = time.time()
             n_bad = 0
             self.optimizer.zero_grad(set_to_none=True)
@@ -131,23 +132,32 @@ class Trainer:
                     self.optimizer.zero_grad(set_to_none=True)
                     self.ema.update(self.model)
                 m_it += float(loss.detach())
+                for k in ("box", "dfl", "cls", "obj", "aux"):
+                    if k in stats:
+                        m_comp[k] = m_comp.get(k, 0.0) + float(stats[k].detach())
             tag = ""
             if self.val_eval_fn is not None and (epoch + 1) % int(self.h.get("val_interval", 2)) == 0:
                 metrics = self.val_eval_fn(self.ema.module)
                 metrics["epoch"] = epoch
                 metrics["lr"] = lr
                 metrics["loss"] = m_it / max(1, n_it)
+                for k in ("box", "dfl", "cls", "obj", "aux"):
+                    metrics[k] = m_comp.get(k, 0.0) / max(1, n_it)
                 self.history.append(metrics)
                 tag = f"  mAP={metrics.get('mAP', float('nan')):.4f}"
                 if metrics.get("mAP", -1) > self.best:
                     self.best = metrics["mAP"]
                     self.save("best.pt")
                 print(f"epoch {epoch:4d} loss={m_it / max(1, n_it):8.3f}{tag} "
-                      f"({time.time() - t0:.0f}s)")
+                      f"box={metrics.get('box',0):7.3f} dfl={metrics.get('dfl',0):7.3f} "
+                      f"cls={metrics.get('cls',0):7.3f} obj={metrics.get('obj',0):7.3f} "
+                      f"aux={metrics.get('aux',0):7.3f} ({time.time() - t0:.0f}s)")
             else:
                 self.history.append({"epoch": epoch, "loss": m_it / max(1, n_it), "lr": lr})
                 print(f"epoch {epoch:4d} loss={m_it / max(1, n_it):8.3f}{tag} "
-                      f"({time.time() - t0:.0f}s)")
+                      f"box={m_comp.get('box',0)/max(1,n_it):7.3f} dfl={m_comp.get('dfl',0)/max(1,n_it):7.3f} "
+                      f"cls={m_comp.get('cls',0)/max(1,n_it):7.3f} obj={m_comp.get('obj',0)/max(1,n_it):7.3f} "
+                      f"aux={m_comp.get('aux',0)/max(1,n_it):7.3f} ({time.time() - t0:.0f}s)")
             self.save("last.pt")
             with open(os.path.join(self.save_dir, f"{self.log_name}.json"), "w") as f:
                 json.dump(self.history, f, indent=1)
