@@ -57,7 +57,8 @@ def dfl_loss(pred_dist, target, reg_max, eps=1e-9):
 class DetectionLoss(nn.Module):
     def __init__(self, num_classes, reg_max=8, strides=(8, 16, 32),
                  box_w=7.5, cls_w=0.5, dfl_w=1.5, obj_w=1.0,
-                 o2m_topk=10, alpha=0.5, beta=6.0, o2o_warmup_epochs=0, epoch=0):
+                 o2m_topk=10, alpha=0.5, beta=6.0, o2o_warmup_epochs=0, epoch=0,
+                 focal_gamma=2.0):
         super().__init__()
         self.nc = num_classes
         self.reg_max = reg_max
@@ -67,6 +68,7 @@ class DetectionLoss(nn.Module):
         self.alpha, self.beta = alpha, beta
         self.o2o_warmup_epochs = o2o_warmup_epochs
         self.epoch = epoch
+        self.focal_gamma = focal_gamma
 
     def set_epoch(self, e):
         self.epoch = e
@@ -192,9 +194,14 @@ class DetectionLoss(nn.Module):
                 cls_target[bi, fg_mask, lbl] = 1.0
                 obj_target[bi, fg_mask, 0] = 1.0
 
-        # full BCE over all anchors: positives one-hot, background zeros
-        loss_cls = F.binary_cross_entropy_with_logits(
-            pred_cls.view(B, N, self.nc), cls_target, reduction="sum")
+        # focal BCE over all anchors: down-weights easy background so the few o2o
+        # positives get real gradient (plain BCE normalized by B*N starves them).
+        logits = pred_cls.view(B, N, self.nc)
+        p = torch.sigmoid(logits)
+        pt = torch.where(cls_target > 0, p, 1 - p)
+        focal = (1 - pt) ** self.focal_gamma
+        bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="none")
+        loss_cls = (focal * bce).sum()
 
         # objectness BCE over all anchors
         loss_obj = F.binary_cross_entropy_with_logits(
