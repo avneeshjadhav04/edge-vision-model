@@ -58,8 +58,10 @@ def main():
 
     mcfg = load_config(args.config)
     ds = OverfitSubset(args.root, n=args.n, transform=None)
-    # light train transform (mosaic on for overfit robustness, small canvas)
-    ds.transform = TrainTransform(args.img_size, mosaic_p=0.5, scale=0.2, translate=0.05,
+    # light train transform for the gate: NO mosaic (dataset_for_mosaic=None would
+    # fill 3/4 quadrants with empty gray, shrinking objects to near-invisible and
+    # biasing the model toward tiny boxes). Affine/flip/HSV only.
+    ds.transform = TrainTransform(args.img_size, mosaic_p=0.0, scale=0.2, translate=0.05,
                                   fliplr=0.5, hsv=(0.015, 0.5, 0.3), dataset_for_mosaic=None)
     model = build_model(mcfg, num_classes=20)
     params = count_params(model)
@@ -72,7 +74,7 @@ def main():
     cfg = {"train": {"optimizer": "adamw", "lr0": 1e-3, "lrf": 0.01, "warmup_epochs": 3,
                      "batch_size": args.batch_size, "workers": 2, "amp": True,
                      "ema_decay": 0.99, "val_interval": 10, "mosaic_close_epochs": 30,
-                     "mosaic": 0.5, "accum": 1}}
+                     "mosaic": 0.0, "accum": 1}}
     tr = Trainer(model, crit, ds, cfg=cfg, device=args.device, save_dir=args.save_dir)
     tr.fit(args.epochs)
     # gate evals the RAW model: with only ~600 steps across 20 images the EMA
