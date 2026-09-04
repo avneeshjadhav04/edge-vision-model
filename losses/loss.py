@@ -104,6 +104,9 @@ class DetectionLoss(nn.Module):
 
         # accumulate target maps for obj
         obj_target = pred_obj.new_full((B, N, 1), 0.0)
+        # full BCE cls target over all anchors (pos=one-hot, bg=zeros) so the
+        # one-to-one head learns to suppress background (else it fires everywhere)
+        cls_target = pred_cls.new_zeros((B, N, self.nc))
         loss_box = pred_box.new_zeros(())
         loss_dfl = pred_box.new_zeros(())
         loss_cls = pred_box.new_zeros(())
@@ -178,14 +181,15 @@ class DetectionLoss(nn.Module):
                 d_raw = pb[fg_mask].view(-1, 4, self.reg_max)
                 loss_dfl = loss_dfl + sum(dfl_loss(d_raw[:, k], dist_t[:, k], self.reg_max)
                                           for k in range(4))
-                # one-to-one main head: the matched class is a hard positive (1.0).
-                # A soft target (align_m ~ 0 at init) never lifts the score off the
-                # cls prior, so inference stays unconfident even after the box fits.
-                tgt = pc[fg_mask].new_ones(fg_mask.sum())
-                logp = F.logsigmoid(pc[fg_mask])
+                # one-to-one main head: matched class is a hard positive (1.0) in
+                # the full-BCE target; background anchors stay 0 (suppressed).
                 lbl = glabels[fg_gts]
-                loss_cls = loss_cls + (-(tgt * logp.gather(1, lbl.view(-1, 1)).squeeze(1))).sum()
+                cls_target[bi, fg_mask, lbl] = 1.0
                 obj_target[bi, fg_mask, 0] = 1.0
+
+        # full BCE over all anchors: positives one-hot, background zeros
+        loss_cls = F.binary_cross_entropy_with_logits(
+            pred_cls.view(B, N, self.nc), cls_target, reduction="sum")
 
         # objectness BCE over all anchors
         loss_obj = F.binary_cross_entropy_with_logits(
