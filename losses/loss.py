@@ -19,7 +19,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from models.decode import make_anchors, bbox_iou
-from .matcher import align_metric, select_candidates, cost_matrix, greedy_hungarian
+from .matcher import (align_metric, select_candidates, select_candidates_in_gxy,
+                      cost_matrix, greedy_hungarian)
 
 
 def ciou(g, p, eps=1e-9):
@@ -131,6 +132,7 @@ class DetectionLoss(nn.Module):
             # ---------- one-to-many (aux) ----------
             align_a, iou_a = align_metric(ab_dec, ac, gboxes, glabels, self.alpha, self.beta)
             cand = select_candidates(align_a, iou_a, self.o2m_topk)     # (M,N) bool
+            cand = cand & select_candidates_in_gxy(gboxes, anchors, strides.view(-1, 1))
             align_norm = align_a / (align_a.amax(dim=1, keepdim=True).clamp(min=1e-6))
             # aux positives: for each GT, its candidate anchors (dedup across GTs: keep best)
             flat_scores = torch.where(cand, align_norm, align_norm.new_full((), -1.0))
@@ -158,6 +160,9 @@ class DetectionLoss(nn.Module):
             # ---------- one-to-one (main) ----------
             align_m, iou_m = align_metric(pb_dec, pc, gboxes, glabels, self.alpha, self.beta)
             cost = cost_matrix(align_m, iou_m, pc, glabels, self.alpha, self.beta)
+            # restrict one-to-one assignment to anchors whose center is inside the GT
+            in_gxy = select_candidates_in_gxy(gboxes, anchors, strides.view(-1, 1))
+            cost = cost.masked_fill(~in_gxy, float("inf"))
             assign = greedy_hungarian(cost)                              # (M,)
             pos_m = assign >= 0
             gt_of_anchor = torch.full((N,), -1, dtype=torch.long, device=device)

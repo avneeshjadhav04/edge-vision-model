@@ -54,6 +54,24 @@ def select_candidates(align, iou, topk=10):
     return mask_align & mask_iou
 
 
+def select_candidates_in_gxy(gt_boxes, anchors, strides):
+    """(M,N) bool: anchor center must lie inside its GT box (YOLO gxy gate).
+
+    Without this, the matcher can assign a corner anchor whose DFL distances to
+    the far box edges exceed the reg_max range, capping the decoded box (the
+    'half-size box' failure). Restricting to center-inside anchors keeps all four
+    DFL targets small and learnable.
+    """
+    gx = (gt_boxes[:, 0] + gt_boxes[:, 2]) / 2                          # (M,)
+    gy = (gt_boxes[:, 1] + gt_boxes[:, 3]) / 2
+    ax = anchors[:, 0][None, :]                                         # (1,N)
+    ay = anchors[:, 1][None, :]
+    # anchor center within the GT box (with a small margin for tiny boxes)
+    in_x = (ax >= gt_boxes[:, 0:1]) & (ax <= gt_boxes[:, 2:3])
+    in_y = (ay >= gt_boxes[:, 1:2]) & (ay <= gt_boxes[:, 3:4])
+    return in_x & in_y
+
+
 def cost_matrix(align, iou, pred_cls, gt_cls, alpha=0.5, beta=6.0, eps=1e-9):
     """Task-aligned cost (lower is better). align/iou: (M,N); pred_cls (N,nc) logits."""
     M = gt_cls.numel()
