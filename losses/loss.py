@@ -178,7 +178,10 @@ class DetectionLoss(nn.Module):
                 d_raw = pb[fg_mask].view(-1, 4, self.reg_max)
                 loss_dfl = loss_dfl + sum(dfl_loss(d_raw[:, k], dist_t[:, k], self.reg_max)
                                           for k in range(4))
-                tgt = align_m[fg_gts, fg_anchors].clamp(0, 1)
+                # one-to-one main head: the matched class is a hard positive (1.0).
+                # A soft target (align_m ~ 0 at init) never lifts the score off the
+                # cls prior, so inference stays unconfident even after the box fits.
+                tgt = pc[fg_mask].new_ones(fg_mask.sum())
                 logp = F.logsigmoid(pc[fg_mask])
                 lbl = glabels[fg_gts]
                 loss_cls = loss_cls + (-(tgt * logp.gather(1, lbl.view(-1, 1)).squeeze(1))).sum()
