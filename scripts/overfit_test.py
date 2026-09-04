@@ -27,6 +27,7 @@ def evaluate_overfit(model, ds, device, img_size=320):
     model.eval()
     preds, targets = [], []
     et = EvalTransform(img_size)
+    all_scores, all_boxes, all_gt = [], [], []
     for i in range(len(ds)):
         img, tgt = ds[i]
         x, t2 = et(img, tgt)  # returns tensor + rescale info
@@ -40,6 +41,29 @@ def evaluate_overfit(model, ds, device, img_size=320):
         preds.append({"pred_boxes": bb.cpu(), "scores": res[0]["scores"].cpu(),
                       "labels": res[0]["labels"].cpu()})
         targets.append(tgt)
+        all_scores.append(res[0]["scores"].cpu())
+        all_boxes.append(bb.cpu())
+        all_gt.append(tgt["boxes"])
+    # ---- diagnostics (why is mAP ~0?) ----
+    import numpy as np
+    sc = torch.cat(all_scores) if all_scores else torch.zeros(0)
+    print(f"  [diag] preds/image: {[len(s) for s in all_scores][:5]}... "
+          f"total={len(sc)}")
+    if sc.numel():
+        print(f"  [diag] score min/mean/max: {sc.min():.4f}/{sc.mean():.4f}/{sc.max():.4f}")
+        print(f"  [diag] #score>0.5: {(sc > 0.5).sum().item()}, #score>0.1: {(sc > 0.1).sum().item()}")
+    # best IoU of any pred box vs each GT (per image)
+    ious = []
+    for bb, gt in zip(all_boxes, all_gt):
+        if bb.numel() == 0 or gt.numel() == 0:
+            continue
+        from models.decode import bbox_iou
+        iou = bbox_iou(gt[:, None, :], bb[None, :, :])  # (M, P)
+        ious.append(iou.max(dim=1).values)
+    if ious:
+        iou_all = torch.cat(ious)
+        print(f"  [diag] best-pred-IoU vs GT: mean={iou_all.mean():.3f} "
+              f"#IoU>0.5={(iou_all > 0.5).sum().item()}/{iou_all.numel()}")
     return eval_voc(preds, targets, num_classes=len(VOC_CLASSES))
 
 
