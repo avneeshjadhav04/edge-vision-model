@@ -197,8 +197,11 @@ class DetectionLoss(nn.Module):
 
         loss_box = self.box_w * loss_box / max(n_pos_main, 1)
         loss_dfl = self.dfl_w * loss_dfl / max(n_pos_main, 1)
-        loss_cls = self.cls_w * loss_cls / max(n_pos_main, 1)
-        loss_obj = self.obj_w * loss_obj / max(n_pos_main, 1)
+        # cls/obj are full-BCE over ALL anchors (B*N) - normalize by anchor count,
+        # not positives, or they dwarf the box loss and starve box regression.
+        n_anchors = max(1, B * N)
+        loss_cls = self.cls_w * loss_cls / n_anchors
+        loss_obj = self.obj_w * loss_obj / n_anchors
         n_imgs_pos = max(1, sum(1 for t in targets if t["boxes"].numel() > 0))
         loss_aux = self.box_w * loss_aux / n_imgs_pos
 
