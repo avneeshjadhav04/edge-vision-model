@@ -18,7 +18,7 @@ neck:
 head:
   type: dual                     # dual assignment: one-to-many aux + one-to-one main
   hidden: 64                     # main head branch width
-  reg_max: 8                     # DFL bins per box side (4*reg_max channels)
+  reg_max: 16                    # DFL bins per box side (4*reg_max channels)
   aux_hidden: 64                 # aux one-to-many branch width (training only)
   num_heads: 4                   # anchors per position on the main (o2o) head grid
 

@@ -160,9 +160,6 @@ class DetectionLoss(nn.Module):
             # ---------- one-to-one (main) ----------
             align_m, iou_m = align_metric(pb_dec, pc, gboxes, glabels, self.alpha, self.beta)
             cost = cost_matrix(align_m, iou_m, pc, glabels, self.alpha, self.beta)
-            # restrict one-to-one assignment to anchors whose center is inside the GT
-            in_gxy = select_candidates_in_gxy(gboxes, anchors, strides.view(-1, 1))
-            cost = cost.masked_fill(~in_gxy, float("inf"))
             assign = greedy_hungarian(cost)                              # (M,)
             pos_m = assign >= 0
             gt_of_anchor = torch.full((N,), -1, dtype=torch.long, device=device)
@@ -204,11 +201,10 @@ class DetectionLoss(nn.Module):
                  "pos_main": float(n_pos_main)}
         return tot, stats
 
-    @staticmethod
-    def _dist_targets(gb, anchors, strides):
+    def _dist_targets(self, gb, anchors, strides):
         """gt (K,4) xyxy pixels -> ltrb distances in stride units, clamped to reg_max-1."""
         l = (anchors[:, 0] - gb[:, 0]) / strides[:, 0]
         t = (anchors[:, 1] - gb[:, 1]) / strides[:, 0]
         r = (gb[:, 2] - anchors[:, 0]) / strides[:, 0]
         b = (gb[:, 3] - anchors[:, 1]) / strides[:, 0]
-        return torch.stack([l, t, r, b], dim=1).clamp(0, 7.0)
+        return torch.stack([l, t, r, b], dim=1).clamp(0, self.reg_max - 1)
