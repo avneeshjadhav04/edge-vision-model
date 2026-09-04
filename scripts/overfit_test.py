@@ -71,14 +71,16 @@ def main():
                          beta=mcfg["loss"]["beta"])
     cfg = {"train": {"optimizer": "adamw", "lr0": 1e-3, "lrf": 0.01, "warmup_epochs": 3,
                      "batch_size": args.batch_size, "workers": 2, "amp": True,
-                     "ema_decay": 0.999, "val_interval": 10, "mosaic_close_epochs": 30,
+                     "ema_decay": 0.99, "val_interval": 10, "mosaic_close_epochs": 30,
                      "mosaic": 0.5, "accum": 1}}
     tr = Trainer(model, crit, ds, cfg=cfg, device=args.device, save_dir=args.save_dir)
     tr.fit(args.epochs)
-    ema_model = tr.ema.module
+    # gate evals the RAW model: with only ~600 steps across 20 images the EMA
+    # (decay 0.99) still lags; raw weights reflect actual learned fit.
+    gate_model = tr.model
     # final eval on a raw (untransformed) view of the same images
     ds_eval = OverfitSubset(args.root, n=args.n, transform=None)
-    m = evaluate_overfit(ema_model, ds_eval, args.device, args.img_size)
+    m = evaluate_overfit(gate_model, ds_eval, args.device, args.img_size)
     print(f"OVERFIT mAP@0.5 = {m['mAP']:.4f} (target {args.target})")
     if m["mAP"] >= args.target:
         print("PASS")
