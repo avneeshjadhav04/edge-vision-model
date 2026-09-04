@@ -19,8 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from models.decode import make_anchors, bbox_iou
-from .matcher import (align_metric, select_candidates, select_candidates_in_gxy,
-                      cost_matrix, greedy_hungarian)
+from .matcher import (align_metric, select_candidates, select_candidates_in_gxy)
 
 
 def ciou(g, p, eps=1e-9):
@@ -161,14 +160,20 @@ class DetectionLoss(nn.Module):
                 loss_aux = loss_aux + (-(tgt * logp.gather(1, glabels[aux_gts].view(-1, 1)).squeeze(1))).sum()
 
             # ---------- one-to-one (main) ----------
-            align_m, iou_m = align_metric(pb_dec, pc, gboxes, glabels, self.alpha, self.beta)
-            cost = cost_matrix(align_m, iou_m, pc, glabels, self.alpha, self.beta)
-            assign = greedy_hungarian(cost)                              # (M,)
-            pos_m = assign >= 0
+            # YOLOv10: the o2o head is supervised by the o2m assignment - for each
+            # GT, the top-1 o2m candidate anchor becomes the o2o positive. Matching
+            # o2o on its OWN (initially bad) boxes gives unstable targets and no
+            # gradient; deriving from the healthy o2m head stabilizes it.
+            # cand: (M,N) bool of o2m candidates; pick best align_a anchor per GT.
+            best_a, best_anchor = align_a.masked_fill(~cand, -1e9).max(dim=1)  # (M,)
+            valid = best_a > -1e8
+            fg_mask = torch.zeros(N, dtype=torch.bool, device=device)
             gt_of_anchor = torch.full((N,), -1, dtype=torch.long, device=device)
-            sel_anchors = assign[pos_m]
-            gt_of_anchor[sel_anchors] = torch.nonzero(pos_m).squeeze(1)
-            fg_mask = gt_of_anchor >= 0
+            if valid.any():
+                sel_anchors = best_anchor[valid]
+                sel_gts = torch.nonzero(valid).squeeze(1)
+                fg_mask[sel_anchors] = True
+                gt_of_anchor[sel_anchors] = sel_gts
             n_pos_main += int(fg_mask.sum())
 
             if fg_mask.any():
