@@ -145,10 +145,13 @@ def main():
     # The train view must overlap the eval view geometrically. A mismatch here
     # (v38 root cause: raw->s x s warp = center-crop vs letterbox eval) poisons
     # every training number downstream. Abort before wasting a run.
+    # Uses get_raw() for the source image: ds[i] applies ds.transform (the train
+    # pipeline) and returns a float CHW tensor, which letterbox/cv2 cannot take
+    # (v41 crash) - raw uint8 HWC is the contract for BOTH transforms.
     eval_tf = EvalTransform(args.img_size)
     et_scales, tr_scales = [], []
     for i in range(min(5, len(ds))):
-        img, tgt = ds[i]
+        img, tgt = ds.get_raw(i)
         _, t_eval = eval_tf(img, tgt)
         r_ev, pw, ph = [float(v) for v in t_eval["rescale"]]
         if tgt["boxes"].numel():
