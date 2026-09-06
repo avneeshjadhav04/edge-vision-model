@@ -199,6 +199,11 @@ class DetectionLoss(nn.Module):
                 cur = cls_target[bi, pos_a, main_lbl]
                 cls_target[bi, pos_a, main_lbl] = torch.maximum(
                     cur.to(dq.dtype), dq).to(cls_target.dtype)
+                # v55: dense OBJ supervision too - every anchor ON an object
+                # (o2m candidate) is an obj positive. The o2o-only obj signal
+                # (50 anchors) left the obj head weakly calibrated (v54:
+                # cls*obj barely beat cls; obj is the multiplier at inference).
+                obj_target[bi, pos_a, 0] = dq.to(obj_target.dtype)
 
             # ---------- one-to-one (main) ----------
             # YOLOv10-style: initial o2o pick is the TOP-1 o2m candidate by the
@@ -268,7 +273,8 @@ class DetectionLoss(nn.Module):
                     q = bbox_iou(mgb, mpb).clamp(0, 1)
                 # dtype guard: cls_target mirrors pred_cls (Half under AMP)
                 cls_target[bi, fg_anchors, lbl] = q.to(cls_target.dtype)
-                obj_target[bi, fg_anchors, 0] = 1.0
+                obj_target[bi, fg_anchors, 0] = torch.maximum(
+                    obj_target[bi, fg_anchors, 0], q.to(obj_target.dtype))
 
         # cls: balanced BCE over ALL anchors with quality-aware soft targets
         # (v45). v44 (hard 1.0 targets, balanced BCE) converged (cls 0.048, pos
