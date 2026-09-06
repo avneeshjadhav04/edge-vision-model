@@ -257,22 +257,18 @@ class DetectionLoss(nn.Module):
                 d_raw = pb[fg_anchors].view(-1, 4, self.reg_max)
                 loss_dfl = loss_dfl + sum(dfl_loss(d_raw[:, k], dist_t[:, k], self.reg_max)
                                           for k in range(4))
-                # one-to-one main head: cls targets come from the DENSE o2m
-                # assignment (v49, standard YOLOv8 recipe): every o2m candidate
-                # anchor for GT g gets a soft positive target = its IoU with g
-                # (detached), background stays 0. The o2o-only cls signal (~50
-                # pos vs 1950 bg on 20 images) was too weak to calibrate the
-                # head in 300 epochs (v44-v48 plateau mAP ~0.51 despite IoU
-                # 0.87: bg anchors on memorized photos outrank positives).
-                # Dense positives (~500) give ~10x more calibration signal; the
-                # NMS-free property is preserved because inference uses the
-                # same one-anchor-per-object scores - the o2o pick is always
-                # among the dense positives (it IS the o2m argmax).
+                # one-to-one main head: HIERARCHICAL cls targets (v51). The o2o
+                # pick (one anchor per object, the anchor inference relies on)
+                # gets hard 1.0; dense o2m candidates get IoU-soft targets
+                # (0.3-0.9, they SHOULD score below the pick); background 0.
+                # v50 showed dense-only IoU targets cap positive scores at ~0.72
+                # (calibration bound) leaving bg anchors at 0.6 competitive per
+                # class. The hard pick gives per-object anchors an unambiguous
+                # top score; dense candidates still provide the 10x calibration
+                # signal that fixed bg suppression (v49/v50).
                 lbl = glabels[fg_gts]
-                with torch.no_grad():
-                    q = bbox_iou(mgb, mpb).clamp(0, 1)
                 # dtype guard: cls_target mirrors pred_cls (Half under AMP)
-                cls_target[bi, fg_anchors, lbl] = q.to(cls_target.dtype)
+                cls_target[bi, fg_anchors, lbl] = 1.0
                 obj_target[bi, fg_anchors, 0] = 1.0
 
         # cls: balanced BCE over ALL anchors with quality-aware soft targets
