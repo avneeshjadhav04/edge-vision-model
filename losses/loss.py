@@ -196,8 +196,9 @@ class DetectionLoss(nn.Module):
                     dq = bbox_iou(gboxes[gt_idx_a[pos_a]],
                                   pb_dec[pos_a]).clamp(0, 1)
                 main_lbl = glabels[gt_idx_a[pos_a]]
+                cur = cls_target[bi, pos_a, main_lbl]
                 cls_target[bi, pos_a, main_lbl] = torch.maximum(
-                    cls_target[bi, pos_a, main_lbl].to(dq.dtype), dq)
+                    cur.to(dq.dtype), dq).to(cls_target.dtype)
 
             # ---------- one-to-one (main) ----------
             # YOLOv10-style: initial o2o pick is the TOP-1 o2m candidate by the
