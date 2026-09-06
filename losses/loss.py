@@ -190,17 +190,50 @@ class DetectionLoss(nn.Module):
                 loss_aux = loss_aux + (-(tgt * logp.gather(1, glabels[aux_gts].view(-1, 1)).squeeze(1))).sum()
 
             # ---------- one-to-one (main) ----------
-            # Task-aligned cost (lower = better) built on the o2m alignment, then
-            # greedy Hungarian: lowest cost first, one anchor per GT, one GT per
-            # anchor. Per-GT argmax + scatter (previous) was last-write-wins -
-            # colliding GTs silently lost their only o2o positive.
-            cost = cost_matrix(align_a, iou_a, ac, glabels, self.alpha, self.beta)
-            cost = cost.masked_fill(~cand, 1e9)
-            assign = greedy_hungarian(cost)                     # (M,) anchor idx or -1
-            fg_mask = assign >= 0
+            # YOLOv10-style: initial o2o pick is the TOP-1 o2m candidate by the
+            # task-aligned metric (IoU^beta * cls^alpha - dominated by IoU, so
+            # targets are spatially stable). Only colliding GTs (two GTs wanting
+            # the same anchor) are re-resolved by greedy Hungarian on the aligned
+            # cost. Pure cost-matrix assignment (v31) is unstable early: the cls
+            # BCE term dominates, cost is near-uniform over candidates, the pick
+            # jumps every epoch and the box head chases a moving target
+            # (observed: box=9.4 flat, best-pred-IoU 0.09).
+            best_vals, best_anchor = align_a.masked_fill(~cand, -1e9).max(dim=1)  # (M,)
+            valid = best_vals > -1e8
+            fg_mask = torch.zeros(N, dtype=torch.bool, device=device)
             gt_of_anchor = torch.full((N,), -1, dtype=torch.long, device=device)
-            if fg_mask.any():
-                gt_of_anchor[assign[fg_mask]] = torch.nonzero(fg_mask).squeeze(1)
+            if valid.any():
+                sel_gts = torch.nonzero(valid).squeeze(1)
+                sel_anchors = best_anchor[sel_gts]
+                # collision check: same anchor chosen by >1 GT
+                uniq, counts = sel_anchors.unique(return_counts=True)
+                dup = uniq[counts > 1]
+                if dup.numel():
+                    from .matcher import cost_matrix, greedy_hungarian
+                    coll_gts = [gi for gi, a in zip(sel_gts.tolist(), sel_anchors.tolist())
+                                if a in dup.tolist()]
+                    coll = torch.tensor(coll_gts, dtype=torch.long, device=device)
+                    sub = cost_matrix(align_a[coll], iou_a[coll], ac, glabels[coll],
+                                      self.alpha, self.beta)
+                    sub = sub[:, dup]                                  # (K, n_dup)
+                    sub = sub.masked_fill(~cand[coll][:, dup], 1e9)
+                    sub_assign = greedy_hungarian(sub)                 # local anchor idx
+                    a_idx = torch.tensor(dup.tolist(), dtype=torch.long, device=device)
+                    keep_local = sub_assign >= 0
+                    # GTs that lost the collision fall back to their next-best
+                    # non-colliding candidate
+                    for k, gi in enumerate(coll.tolist()):
+                        if keep_local[k]:
+                            a = a_idx[sub_assign[k]]
+                            sel_anchors[sel_gts == gi] = a
+                        else:
+                            masked = align_a[gi].clone()
+                            masked[dup] = -1e9
+                            masked[sel_anchors[sel_gts != gi]] = -1e9  # avoid other picks
+                            if masked.max() > -1e8:
+                                sel_anchors[sel_gts == gi] = masked.argmax()
+                fg_mask[sel_anchors] = True
+                gt_of_anchor[sel_anchors] = sel_gts
             n_pos_main += int(fg_mask.sum())
 
             if fg_mask.any():
