@@ -247,15 +247,17 @@ class DetectionLoss(nn.Module):
                 d_raw = pb[fg_anchors].view(-1, 4, self.reg_max)
                 loss_dfl = loss_dfl + sum(dfl_loss(d_raw[:, k], dist_t[:, k], self.reg_max)
                                           for k in range(4))
-                # one-to-one main head: cls target is QUALITY-AWARE (v45, YOLOv8/
-                # TOOD style): the assigned anchor's normalized alignment metric
-                # (IoU^beta-dominated, detached) instead of hard 1.0. A background
-                # anchor can only reach a high cls score by producing a
-                # high-quality box - photo-texture anchors (the v44 failure mode:
-                # 1247/1934 bg anchors >0.5 with hard targets) cannot fake box
-                # quality they don't have.
+                # one-to-one main head: cls target is QUALITY-AWARE (v47, YOLOv8
+                # soft-cls design): IoU between the ASSIGNED anchor's predicted
+                # box and its GT (detached). v46's align_norm target was
+                # structurally void - the o2o pick IS the align-argmax, so
+                # align_norm[gt, pick] == row max == 1.0 always. A true pred-vs-
+                # gt IoU is a genuine signal: bg anchors cannot fake an IoU they
+                # cannot produce (v46 diag: memorized anchors' DFL entropy 1.2-
+                # 2.1 vs bg 2.73~uniform).
                 lbl = glabels[fg_gts]
-                q = align_norm[fg_gts, fg_anchors].clamp(0, 1)   # detached
+                with torch.no_grad():
+                    q = bbox_iou(mgb, mpb).clamp(0, 1)
                 # dtype guard: cls_target mirrors pred_cls (Half under AMP)
                 cls_target[bi, fg_anchors, lbl] = q.to(cls_target.dtype)
                 obj_target[bi, fg_anchors, 0] = 1.0
