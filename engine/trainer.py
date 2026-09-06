@@ -201,7 +201,7 @@ class Trainer:
                 if metrics.get("mAP", -1) > self.best:
                     self.best = metrics["mAP"]
                     # best.pt carries the EMA weights (they are what mAP selected)
-                    self.save("best.pt", extra={"model": self.ema.ema.state_dict(),
+                    self.save("best.pt", extra={"model": self.ema.module.state_dict(),
                                                 "is_ema": True})
                 print(f"epoch {epoch:4d} loss={m_it / max(1, n_it):8.3f}{tag} "
                       f"box={metrics.get('box',0):7.3f} dfl={metrics.get('dfl',0):7.3f} "

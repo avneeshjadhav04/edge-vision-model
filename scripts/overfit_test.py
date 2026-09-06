@@ -225,7 +225,7 @@ def main():
     m_raw = evaluate_overfit(tr.model, ds_eval, args.device, args.img_size)
     print(f"OVERFIT raw mAP@0.5 = {m_raw['mAP']:.4f} [scoring: {m_raw['scoring']}]")
     ema_model = copy.deepcopy(tr.model)
-    ema_model.load_state_dict(tr.ema.ema.state_dict(), strict=True)
+    ema_model.load_state_dict(tr.ema.module.state_dict(), strict=True)
     m_ema = evaluate_overfit(ema_model, ds_eval, args.device, args.img_size)
     print(f"OVERFIT ema  mAP@0.5 = {m_ema['mAP']:.4f} [scoring: {m_ema['scoring']}]")
     m = m_ema if m_ema["mAP"] >= m_raw["mAP"] else m_raw
