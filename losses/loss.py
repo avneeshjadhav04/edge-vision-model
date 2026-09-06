@@ -189,6 +189,15 @@ class DetectionLoss(nn.Module):
                 tgt = align_norm[aux_gts, aux_anchors].clamp(0, 1)
                 logp = F.logsigmoid(ac[pos_a])
                 loss_aux = loss_aux + (-(tgt * logp.gather(1, glabels[aux_gts].view(-1, 1)).squeeze(1))).sum()
+                # v49: dense cls supervision for the MAIN head on o2m candidates:
+                # target = detached IoU between the MAIN head's decoded box at
+                # that anchor and the GT
+                with torch.no_grad():
+                    dq = bbox_iou(gboxes[gt_idx_a[pos_a]],
+                                  pb_dec[pos_a]).clamp(0, 1)
+                main_lbl = glabels[gt_idx_a[pos_a]]
+                cls_target[bi, pos_a, main_lbl] = torch.maximum(
+                    cls_target[bi, pos_a, main_lbl].to(dq.dtype), dq)
 
             # ---------- one-to-one (main) ----------
             # YOLOv10-style: initial o2o pick is the TOP-1 o2m candidate by the
@@ -247,14 +256,17 @@ class DetectionLoss(nn.Module):
                 d_raw = pb[fg_anchors].view(-1, 4, self.reg_max)
                 loss_dfl = loss_dfl + sum(dfl_loss(d_raw[:, k], dist_t[:, k], self.reg_max)
                                           for k in range(4))
-                # one-to-one main head: cls target is QUALITY-AWARE (v47, YOLOv8
-                # soft-cls design): IoU between the ASSIGNED anchor's predicted
-                # box and its GT (detached). v46's align_norm target was
-                # structurally void - the o2o pick IS the align-argmax, so
-                # align_norm[gt, pick] == row max == 1.0 always. A true pred-vs-
-                # gt IoU is a genuine signal: bg anchors cannot fake an IoU they
-                # cannot produce (v46 diag: memorized anchors' DFL entropy 1.2-
-                # 2.1 vs bg 2.73~uniform).
+                # one-to-one main head: cls targets come from the DENSE o2m
+                # assignment (v49, standard YOLOv8 recipe): every o2m candidate
+                # anchor for GT g gets a soft positive target = its IoU with g
+                # (detached), background stays 0. The o2o-only cls signal (~50
+                # pos vs 1950 bg on 20 images) was too weak to calibrate the
+                # head in 300 epochs (v44-v48 plateau mAP ~0.51 despite IoU
+                # 0.87: bg anchors on memorized photos outrank positives).
+                # Dense positives (~500) give ~10x more calibration signal; the
+                # NMS-free property is preserved because inference uses the
+                # same one-anchor-per-object scores - the o2o pick is always
+                # among the dense positives (it IS the o2m argmax).
                 lbl = glabels[fg_gts]
                 with torch.no_grad():
                     q = bbox_iou(mgb, mpb).clamp(0, 1)
