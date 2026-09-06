@@ -193,6 +193,15 @@ class DetectionLoss(nn.Module):
                 lbl = glabels[fg_gts]
                 cls_target[bi, fg_mask, lbl] = 1.0
                 obj_target[bi, fg_mask, 0] = 1.0
+                # YOLOv10: the o2o head's cls is also supervised by the DENSE o2m
+                # assignment (pos_a, ~500 anchors) - not just the ~50 o2o positives.
+                # With only 50 positives the cls branch can't both fire on objects
+                # AND suppress 1950 background anchors (v22: 1764/2000 still fire).
+                # Dense positives give the branch enough signal to localize objects.
+                if pos_a.any():
+                    aux_anchors = torch.nonzero(pos_a).squeeze(1)
+                    aux_gts = gt_idx_a[aux_anchors]
+                    cls_target[bi, aux_anchors, glabels[aux_gts]] = 1.0
 
         # cls: YOLOv8-style focal BCE over all anchors, normalized by num_pos.
         # Focal down-weights easy examples: confident positives (sigmoid->1) and
