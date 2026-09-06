@@ -252,17 +252,20 @@ class DetectionLoss(nn.Module):
                 cls_target[bi, fg_anchors, lbl] = 1.0
                 obj_target[bi, fg_anchors, 0] = 1.0
 
-        # cls: BCE over ONLY the o2o positives (YOLOv10). The o2o head must fire
-        # confidently on its ~50 assigned anchors; the dense o2m assignment (~500)
-        # dilutes their gradient and the background term (~1500) swamps them
-        # (v28: cls flat ~9, o2o positives never confident). No background term
-        # here - the o2o head is NMS-free, each anchor is pos or bg, and the
-        # o2m/aux head handles dense localization.
+        # cls: balanced BCE over ALL anchors (v33). v32's pos-only BCE left the
+        # ~1950 background anchors unsupervised: all 2000 fired at score 1.0.
+        # Positives (/n_pos) keep the ~50 o2o anchors confident; background
+        # (/n_neg, own count so ~1950 bg anchors don't swamp them) provides the
+        # suppression gradient. The obj branch proves the head can separate
+        # (obj loss 0.33 -> pos p~0.86 / bg p~0.13).
         logits = pred_cls.view(B, N, self.nc)
-        pos_mask = cls_target > 0
-        n_pos = max(1, int(pos_mask.sum()))
         bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="none")
-        loss_cls = bce[pos_mask].sum() / n_pos
+        anchor_is_pos = cls_target.sum(dim=2) > 0                       # (B,N)
+        pos_mask = anchor_is_pos.unsqueeze(2).expand_as(cls_target)
+        n_pos = max(1, int(anchor_is_pos.sum()) * self.nc)
+        n_neg = max(1, int((~anchor_is_pos).sum()) * self.nc)
+        loss_cls = (bce[pos_mask].sum() / n_pos +
+                    bce[~pos_mask].sum() / n_neg)
 
         # obj: balanced BCE over all anchors - pos=1 on o2o positives, neg=0 on
         # background, each normalized by its own count. The obj branch is SEPARATE

@@ -43,15 +43,19 @@ def align_metric(pred_boxes, pred_cls, gt_boxes, gt_cls, alpha=0.5, beta=6.0, ep
 
 
 def select_candidates(align, iou, topk=10):
-    """SimOTA-style candidate mask: topk by align, require IoU > iou_thresh.
-    align/iou: (M,N). Returns (M,N) bool."""
+    """SimOTA-style candidate mask: top-k anchors by the task-aligned metric.
+
+    The hard `iou > 0.2` gate (removed in v33) starved large GTs: early pred
+    boxes are small, so big GTs had zero candidates and fell back to a stride-8
+    anchor whose DFL targets clamp at reg_max-1 (permanent box-loss floor ~1.1,
+    decoded boxes capped at 240px @320). The IoU^beta term in `align` already
+    ranks anchors by overlap; top-k + the center-inside gate suffice.
+    """
     M, N = align.shape
     topk = min(max(topk, 1), N)
     topk_vals, _ = align.topk(topk, dim=1)                              # (M,topk)
-    thresh = topk_vals[:, -1:].clamp(min=1e-6)
-    mask_align = align >= thresh
-    mask_iou = iou > 0.20
-    return mask_align & mask_iou
+    thresh = topk_vals[:, -1:]
+    return align >= thresh
 
 
 def select_candidates_in_gxy(gt_boxes, anchors, strides):
