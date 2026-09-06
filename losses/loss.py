@@ -80,7 +80,7 @@ class DetectionLoss(nn.Module):
     def __init__(self, num_classes, reg_max=8, strides=(8, 16, 32),
                  box_w=7.5, cls_w=0.5, dfl_w=1.5, obj_w=1.0,
                  o2m_topk=10, alpha=0.5, beta=6.0, o2o_warmup_epochs=0, epoch=0,
-                 focal_gamma=2.0):
+                 focal_gamma=2.0, focal_alpha=0.25):
         super().__init__()
         self.nc = num_classes
         self.reg_max = reg_max
@@ -91,6 +91,7 @@ class DetectionLoss(nn.Module):
         self.o2o_warmup_epochs = o2o_warmup_epochs
         self.epoch = epoch
         self.focal_gamma = focal_gamma
+        self.focal_alpha = focal_alpha
 
     def set_epoch(self, e):
         self.epoch = e
@@ -252,16 +253,22 @@ class DetectionLoss(nn.Module):
                 cls_target[bi, fg_anchors, lbl] = 1.0
                 obj_target[bi, fg_anchors, 0] = 1.0
 
-        # cls: YOLOv8 normalization (v35) - BCE over ALL anchors divided by
-        # n_pos_total. Background mass = (n_bg/n_pos) * mean_bce ~= 39x the
-        # positive mass at ~50 pos / 1950 bg: strong, decisive suppression.
-        # v33's balanced-by-count split gave bg only 23% of gradient mass ->
-        # 837-1578/2000 anchors kept firing; v34 (cls*obj) scored worse because
-        # the noisy obj maps reordered scores harmfully.
+        # cls: focal BCE over ALL anchors / n_pos (v36). Empirical map across
+        # v32-v35 (all with fixed CIoU + stable o2o + no iou-gate):
+        #   pos-only BCE  -> bg unsupervised, all 2000 fire
+        #   balanced      -> bg 23% grad mass, 1578 fire
+        #   BCE(all)/n_pos-> bg swamps positives, cls 2.8 flat, nothing fires
+        # Focal (gamma=2, alpha=0.25, YOLOv8) is the standard resolution: easy
+        # bg anchors are down-weighted ~100x while hard negatives keep gradient,
+        # so positives stay learnable and background still gets suppressed.
         logits = pred_cls.view(B, N, self.nc)
+        p = torch.sigmoid(logits)
         bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="none")
+        p_t = p * cls_target + (1 - p) * (1 - cls_target)
+        alpha_t = self.focal_alpha * cls_target + (1 - self.focal_alpha) * (1 - cls_target)
+        focal = alpha_t * (1 - p_t).pow(self.focal_gamma) * bce
         n_pos_cls = max(1, int((cls_target.sum(dim=2) > 0).sum()))
-        loss_cls = bce.sum() / n_pos_cls
+        loss_cls = focal.sum() / n_pos_cls
 
         # obj: balanced BCE over all anchors - pos=1 on o2o positives, neg=0 on
         # background, each normalized by its own count. The obj branch is SEPARATE
