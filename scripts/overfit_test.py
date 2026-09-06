@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 
 from data.voc import OverfitSubset, VOC_CLASSES
-from data.augment import TrainTransform
+from data.augment import TrainTransform, EvalTransform
 from engine.trainer import Trainer
 from losses import DetectionLoss
 from models import build_model, count_params
