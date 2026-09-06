@@ -191,16 +191,16 @@ def main():
     # ---- fail-fast probe: eval + full diagnostics at epoch 30 ----
     # catches eval-harness crashes and gives score/IoU signal in ~1 min instead
     # of waiting the full 300 epochs (v39 lost its entire run to an eval crash).
-    # Implemented as a val_eval_fn shim: trainer fires it when (epoch+1) %
-    # val_interval == 0 and tr.epoch == 30, i.e. the (30+1)=31st epoch boundary.
-    def probe_at_epoch30(model_ema):
-        if tr.epoch != 30:
-            return None
-        m = evaluate_overfit(tr.model, OverfitSubset(args.root, n=args.n, transform=None),
+    # Runs via the trainer's epoch_hook (side-effect only): the val_eval_fn
+    # contract expects a metrics dict and crashed when the probe returned None
+    # (v42).
+    def probe(trainer, epoch):
+        if epoch != 30:
+            return
+        m = evaluate_overfit(trainer.model, OverfitSubset(args.root, n=args.n, transform=None),
                              args.device, args.img_size)
-        print(f"  [probe@{tr.epoch}] mAP@0.5 = {m['mAP']:.4f} [scoring: {m['scoring']}]")
-        return None                      # don't affect trainer history/best tracking
-    tr.val_eval_fn = probe_at_epoch30
+        print(f"  [probe@{epoch}] mAP@0.5 = {m['mAP']:.4f} [scoring: {m['scoring']}]")
+    tr.epoch_hook = probe
     tr.fit(args.epochs)
     # gate evals the RAW model: with only ~600 steps across 20 images the EMA
     # (decay 0.99) still lags; raw weights reflect actual learned fit.

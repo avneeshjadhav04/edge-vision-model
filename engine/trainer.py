@@ -49,6 +49,7 @@ class Trainer:
         self.save_dir = save_dir
         os.makedirs(save_dir, exist_ok=True)
         self.val_eval_fn = val_eval_fn
+        self.epoch_hook = None
         self.val_loader = val_loader
         self.seed = seed
         self.generator = torch.Generator().manual_seed(seed)
@@ -184,6 +185,10 @@ class Trainer:
                     if k in stats:
                         m_comp[k] = m_comp.get(k, 0.0) + float(stats[k].detach())
             tag = ""
+            # epoch-hook (side-effect only: logging, probes). Runs OUTSIDE the
+            # val_eval_fn contract, whose return value feeds history/best.
+            if self.epoch_hook is not None:
+                self.epoch_hook(self, epoch)
             if self.val_eval_fn is not None and (epoch + 1) % int(self.h.get("val_interval", 2)) == 0:
                 metrics = self.val_eval_fn(self.ema.module)
                 metrics["epoch"] = epoch
