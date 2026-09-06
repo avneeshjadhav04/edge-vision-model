@@ -91,7 +91,14 @@ class Mosaic:
 
 
 class RandomAffineBoxes:
-    """Scale/translate jitter on the mosaic canvas, then crop to img_size."""
+    """Affine scale/translate jitter + flip, about the CANVAS center, crop to s.
+
+    Input is already square (s x s): the mosaic canvas (2s x 2s cropped later -
+    not here) or a LETTERBOXED image (v38). Letterbox-first matters: the eval
+    and deployment views are letterboxed whole-image; warping the raw image
+    straight to s x s (the old behavior) produced center-crops that never match
+    that view - train/eval distribution mismatch, capped eval mAP.
+    """
 
     def __init__(self, img_size=640, scale=0.5, translate=0.1, fliplr=0.5):
         self.img_size = img_size
@@ -101,12 +108,12 @@ class RandomAffineBoxes:
 
     def __call__(self, img, target):
         s = self.img_size
-        H, W = img.shape[:2]  # may be 2s x 2s from mosaic or s x s normal
+        H, W = img.shape[:2]
         r = random.uniform(1 - self.scale, 1 + self.scale)
         tx = random.uniform(-self.translate, self.translate) * s
         ty = random.uniform(-self.translate, self.translate) * s
-        # affine: scale about the CANVAS center (mosaic produces 2s x 2s; a plain
-        # image is s x s) + translate, then crop to s x s
+        # affine: scale about the input center (2s x 2s mosaic canvas -> sample
+        # an s x s window; s x s letterboxed image -> jitter in place) + translate
         ch, cw = H / 2, W / 2
         M = np.array([[r, 0, tx + cw * (1 - r)],
                       [0, r, ty + ch * (1 - r)]], dtype=np.float64)
@@ -188,6 +195,26 @@ class TrainTransform:
             img, target = self.mosaic(img, target,
                                       extra_loader=self._mosaic_extra,
                                       extra_index=list(range(4)))
+        else:
+            # v38: letterbox non-mosaic images FIRST so the training view matches
+            # the eval/deploy view (letterboxed whole image, gray pads). Warping
+            # raw images straight to s x s was a center-crop - train/eval
+            # distribution mismatch that capped every gate run. Boxes move into
+            # network-input pixels here (scale by r, shift by pads).
+            s = self.img_size
+            H, W = img.shape[:2]
+            if (H, W) != (s, s):
+                from .common import letterbox
+                lb, r_lb, pads = letterbox(img, s)
+                b = target["boxes"]
+                if b.numel():
+                    nb = b.clone()
+                    nb[:, [0, 2]] = nb[:, [0, 2]] * r_lb + pads[0]
+                    nb[:, [1, 3]] = nb[:, [1, 3]] * r_lb + pads[1]
+                else:
+                    nb = b
+                img = lb
+                target = {"boxes": nb, "labels": target["labels"]}
         img, target = self.affine(img, target)
         img, target = self.photo(img, target)
         img = torch.from_numpy(np.ascontiguousarray(img)).permute(2, 0, 1).float() / 255.0
