@@ -247,20 +247,23 @@ class DetectionLoss(nn.Module):
                 d_raw = pb[fg_anchors].view(-1, 4, self.reg_max)
                 loss_dfl = loss_dfl + sum(dfl_loss(d_raw[:, k], dist_t[:, k], self.reg_max)
                                           for k in range(4))
-                # one-to-one main head: matched class is a hard positive (1.0) in
-                # the full-BCE target; background anchors stay 0 (suppressed).
+                # one-to-one main head: cls target is QUALITY-AWARE (v45, YOLOv8/
+                # TOOD style): the assigned anchor's normalized alignment metric
+                # (IoU^beta-dominated, detached) instead of hard 1.0. A background
+                # anchor can only reach a high cls score by producing a
+                # high-quality box - photo-texture anchors (the v44 failure mode:
+                # 1247/1934 bg anchors >0.5 with hard targets) cannot fake box
+                # quality they don't have.
                 lbl = glabels[fg_gts]
-                cls_target[bi, fg_anchors, lbl] = 1.0
+                q = align_norm[fg_gts, fg_anchors].clamp(0, 1)   # detached
+                cls_target[bi, fg_anchors, lbl] = q
                 obj_target[bi, fg_anchors, 0] = 1.0
 
-        # cls: balanced BCE over ALL anchors (v44). The v43 diagnosis: with focal
-        # (gamma=2, alpha=0.5, /n_pos) the plateau 0.83 IS the background term -
-        # 1950 bg anchors at p~0.1 contribute (0.9)^2 * 0.105 each; positives get
-        # near-zero pressure once p>0.5 and never saturate (eval max 0.61, only
-        # 13/1974 anchors >0.5 vs 50 GTs). Balanced normalization gives positives
-        # a dedicated 1/n_pos pressure to reach p->1 while bg /n_neg suppresses;
-        # the earlier balanced run (v33, 1578 fire) was on the PRE-v38 OOD eval
-        # view - in-distribution it should calibrate cleanly.
+        # cls: balanced BCE over ALL anchors with quality-aware soft targets
+        # (v45). v44 (hard 1.0 targets, balanced BCE) converged (cls 0.048, pos
+        # max 0.996, IoU 0.872) but 1247/1934 photo-texture bg anchors kept
+        # p>0.5 - mAP capped at 0.505. Soft targets make the score box-quality
+        # aware: bg anchors can't fake an IoU they can't produce.
         logits = pred_cls.view(B, N, self.nc)
         bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="none")
         anchor_is_pos = cls_target.sum(dim=2) > 0                       # (B,N)
