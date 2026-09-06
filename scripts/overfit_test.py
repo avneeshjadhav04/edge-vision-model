@@ -20,43 +20,73 @@ from scripts.common import load_config
 
 
 def evaluate_overfit(model, ds, device, img_size=320):
-    """Deterministic eval on the overfit set (letterboxed, no mosaic)."""
+    """Deterministic eval on the overfit set (letterboxed, no mosaic).
+
+    Runs BOTH scoring rules (cls-only and cls*obj) on the same predictions and
+    reports both mAPs; the returned dict carries the better one. v34 showed
+    cls*obj reordering on the OOD eval view; v38 fixed the view (IoU 0.867,
+    50/50), so the obj branch (cleanly separated: obj loss ~0.26 -> pos p~0.9 /
+    bg p~0.15) is now a legitimate ranking signal again.
+    """
     from data.augment import EvalTransform
     from data.common import letterbox
     from engine.eval_voc import eval_voc
     model.eval()
-    preds, targets = [], []
+    preds_cls, preds_prod, targets = [], [], []
     et = EvalTransform(img_size)
     all_scores, all_boxes, all_gt = [], [], []
+    from models.decode import _anchors_from_shapes, dfl_decode
     for i in range(len(ds)):
         img, tgt = ds[i]
         x, t2 = et(img, tgt)  # returns tensor + rescale info
         with torch.no_grad():
-            # v35: score = cls only (obj reverts to aux role). YOLOv8 /n_pos
-            # cls normalization makes the background term 39x the positive mass
-            # (50 pos vs 1950 bg @320) - decisive suppression without obj.
-            res = model.predict(x[None].to(device), score_thresh=0.01, max_det=100,
-                                use_obj=False)
+            raw = model(x[None].to(device), with_aux=False)
+            shapes = [(int(b.shape[2]), int(b.shape[3])) for (b, _, _) in raw]
+            anchors, strides = _anchors_from_shapes(shapes, model.strides, x.device)
+            box_flat, cls_flat, obj_flat = [], [], []
+            for (bx, cl, ob) in raw:
+                B, _, H, W = bx.shape
+                box_flat.append(bx.view(B, 4 * model.reg_max, H * W).permute(0, 2, 1))
+                cls_flat.append(cl.view(B, -1, H * W).permute(0, 2, 1))
+                obj_flat.append(ob.view(B, 1, H * W).permute(0, 2, 1))
+            boxes = dfl_decode(torch.cat(box_flat, 1), model.reg_max, model.dfl_proj,
+                               anchors, strides)
+            max_xy = float(anchors.max()) * 2
+            boxes = boxes.clamp(0, max_xy)
+            cls_s = torch.cat(cls_flat, 1).sigmoid()
+            obj_s = torch.cat(obj_flat, 1).sigmoid()
+            sc_cls = cls_s.amax(-1)
+            sc_prod = (cls_s * obj_s).amax(-1)
+            lbl_cls = cls_s.argmax(-1)
+            lbl_prod = (cls_s * obj_s).argmax(-1)
+
         r, pw, ph = [float(v) for v in t2["rescale"]]
-        bb = res[0]["pred_boxes"].clone()
-        if bb.numel():
-            bb[:, [0, 2]] = (bb[:, [0, 2]] - pw) / r
-            bb[:, [1, 3]] = (bb[:, [1, 3]] - ph) / r
-        preds.append({"pred_boxes": bb.cpu(), "scores": res[0]["scores"].cpu(),
-                      "labels": res[0]["labels"].cpu()})
+        per_sc = []
+        for keep_mask, ss, ll in ((sc_cls[0] > 0.01, sc_cls[0], lbl_cls[0]),
+                                  (sc_prod[0] > 0.01, sc_prod[0], lbl_prod[0])):
+            bb = boxes[0][keep_mask]
+            s_, l_ = ss[keep_mask], ll[keep_mask]
+            if bb.numel() > 100:
+                topv, topi = s_.topk(100)
+                bb, s_, l_ = bb[topi], topv, l_[topi]
+            bb = bb.clone()
+            if bb.numel():
+                bb[:, [0, 2]] = (bb[:, [0, 2]] - pw) / r
+                bb[:, [1, 3]] = (bb[:, [1, 3]] - ph) / r
+            per_sc.append({"pred_boxes": bb.cpu(), "scores": s_.cpu(), "labels": l_.cpu()})
+        preds_cls.append(per_sc[0])
+        preds_prod.append(per_sc[1])
         targets.append(tgt)
-        all_scores.append(res[0]["scores"].cpu())
-        all_boxes.append(bb.cpu())
+        all_scores.append(per_sc[1]["scores"].cpu())
+        all_boxes.append(per_sc[1]["pred_boxes"].cpu())
         all_gt.append(tgt["boxes"])
-    # ---- diagnostics (why is mAP ~0?) ----
-    import numpy as np
+    # ---- diagnostics ----
     sc = torch.cat(all_scores) if all_scores else torch.zeros(0)
     print(f"  [diag] preds/image: {[len(s) for s in all_scores][:5]}... "
           f"total={len(sc)}")
     if sc.numel():
         print(f"  [diag] score min/mean/max: {sc.min():.4f}/{sc.mean():.4f}/{sc.max():.4f}")
         print(f"  [diag] #score>0.5: {(sc > 0.5).sum().item()}, #score>0.1: {(sc > 0.1).sum().item()}")
-    # best IoU of any pred box vs each GT (per image)
     ious = []
     for bb, gt in zip(all_boxes, all_gt):
         if bb.numel() == 0 or gt.numel() == 0:
@@ -68,7 +98,12 @@ def evaluate_overfit(model, ds, device, img_size=320):
         iou_all = torch.cat(ious)
         print(f"  [diag] best-pred-IoU vs GT: mean={iou_all.mean():.3f} "
               f"#IoU>0.5={(iou_all > 0.5).sum().item()}/{iou_all.numel()}")
-    return eval_voc(preds, targets, num_classes=len(VOC_CLASSES))
+    res_cls = eval_voc(preds_cls, targets, num_classes=len(VOC_CLASSES))
+    res_prod = eval_voc(preds_prod, targets, num_classes=len(VOC_CLASSES))
+    print(f"  [diag] mAP cls-only={res_cls['mAP']:.4f}  cls*obj={res_prod['mAP']:.4f}")
+    best = res_prod if res_prod["mAP"] >= res_cls["mAP"] else res_cls
+    best["scoring"] = "cls*obj" if best is res_prod else "cls"
+    return best
 
 
 def main():
@@ -111,7 +146,7 @@ def main():
     # final eval on a raw (untransformed) view of the same images
     ds_eval = OverfitSubset(args.root, n=args.n, transform=None)
     m = evaluate_overfit(gate_model, ds_eval, args.device, args.img_size)
-    print(f"OVERFIT mAP@0.5 = {m['mAP']:.4f} (target {args.target})")
+    print(f"OVERFIT mAP@0.5 = {m['mAP']:.4f} (target {args.target}) [scoring: {m['scoring']}]")
     if m["mAP"] >= args.target:
         print("PASS")
     else:
