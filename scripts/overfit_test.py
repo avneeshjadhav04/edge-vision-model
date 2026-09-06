@@ -32,11 +32,12 @@ def evaluate_overfit(model, ds, device, img_size=320):
         img, tgt = ds[i]
         x, t2 = et(img, tgt)  # returns tensor + rescale info
         with torch.no_grad():
-            # score = cls * obj: cls classifies (focal /num_pos, dense o2m pos),
-            # obj suppresses background (balanced BCE on its own branch). cls alone
-            # fires everywhere (focal kills neg gradient); obj is the suppression.
+            # YOLOv8-style: score = cls only. Plain BCE cls /num_pos (with dense
+            # o2m positives) trains cls to fire on objects AND suppress background.
+            # The obj branch is not used at inference (it never separates, stuck
+            # at sigmoid~0.5, and would cap all scores).
             res = model.predict(x[None].to(device), score_thresh=0.01, max_det=100,
-                                use_obj=True)
+                                use_obj=False)
         r, pw, ph = [float(v) for v in t2["rescale"]]
         bb = res[0]["pred_boxes"].clone()
         if bb.numel():
