@@ -32,6 +32,10 @@ def evaluate_overfit(model, ds, device, img_size=320):
     from data.common import letterbox
     from engine.eval_voc import eval_voc
     model.eval()
+    # derive device from the model itself: an eval fn that trusts the caller's
+    # `device` string (or the CPU-resident eval tensor) silently mixes CUDA/CPU
+    # tensors and crashes mid-eval (v39: `x.device` is CPU while raw is cuda:0)
+    dev = next(model.parameters()).device
     preds_cls, preds_prod, targets = [], [], []
     et = EvalTransform(img_size)
     all_scores, all_boxes, all_gt = [], [], []
@@ -40,9 +44,13 @@ def evaluate_overfit(model, ds, device, img_size=320):
         img, tgt = ds[i]
         x, t2 = et(img, tgt)  # returns tensor + rescale info
         with torch.no_grad():
-            raw = model(x[None].to(device), with_aux=False)
+            raw = model(x[None].to(dev), with_aux=False)
             shapes = [(int(b.shape[2]), int(b.shape[3])) for (b, _, _) in raw]
-            anchors, strides = _anchors_from_shapes(shapes, model.strides, x.device)
+            anchors, strides = _anchors_from_shapes(shapes, model.strides, dev)
+            # invariant: decode inputs must share one device (fail fast, don't
+            # crash 20 images later)
+            assert anchors.device == raw[0][0].device, \
+                f"anchor grid device {anchors.device} != head output {raw[0][0].device}"
             box_flat, cls_flat, obj_flat = [], [], []
             for (bx, cl, ob) in raw:
                 B, _, H, W = bx.shape
@@ -66,7 +74,10 @@ def evaluate_overfit(model, ds, device, img_size=320):
                                   (sc_prod[0] > 0.01, sc_prod[0], lbl_prod[0])):
             bb = boxes[0][keep_mask]
             s_, l_ = ss[keep_mask], ll[keep_mask]
-            if bb.numel() > 100:
+            # cap on the NUMBER OF SCORES (not box elements): bb is (M,4) so
+            # numel() counts 4x - `bb.numel() > 100` fired at 26 detections and
+            # topk(100) would crash (v39 bug 2). Matches Postprocessor semantics.
+            if s_.numel() > 100:
                 topv, topi = s_.topk(100)
                 bb, s_, l_ = bb[topi], topv, l_[topi]
             bb = bb.clone()
@@ -129,6 +140,40 @@ def main():
     model = build_model(mcfg, num_classes=20)
     params = count_params(model)
     print(f"params: {params['total'] / 1e6:.2f}M total / {params['deployable'] / 1e6:.2f}M deployable")
+
+    # ---- transform-parity check (startup, fail fast) ----
+    # The train view must overlap the eval view geometrically. A mismatch here
+    # (v38 root cause: raw->s x s warp = center-crop vs letterbox eval) poisons
+    # every training number downstream. Abort before wasting a run.
+    eval_tf = EvalTransform(args.img_size)
+    et_scales, tr_scales = [], []
+    for i in range(min(5, len(ds))):
+        img, tgt = ds[i]
+        _, t_eval = eval_tf(img, tgt)
+        r_ev, pw, ph = [float(v) for v in t_eval["rescale"]]
+        if tgt["boxes"].numel():
+            b = tgt["boxes"][0]
+            w_ev = (b[2] - b[0]).item() * r_ev          # eval-view box width (net px)
+            h_ev = (b[3] - b[1]).item() * r_ev
+            et_scales.append((w_ev, h_ev))
+        for _ in range(3):
+            _, t_tr = ds.transform(img, tgt)             # train view (net px already)
+            if t_tr["boxes"].numel():
+                b = t_tr["boxes"][0]
+                tr_scales.append(((b[2] - b[0]).item(), (b[3] - b[1]).item()))
+    if et_scales and tr_scales:
+        w_ev = sum(s[0] for s in et_scales) / len(et_scales)
+        h_ev = sum(s[1] for s in et_scales) / len(et_scales)
+        w_tr = sum(s[0] for s in tr_scales) / len(tr_scales)
+        h_tr = sum(s[1] for s in tr_scales) / len(tr_scales)
+        ratio = max(w_tr / max(w_ev, 1e-6), w_ev / max(w_tr, 1e-6))
+        print(f"  [parity] train-view box {w_tr:.1f}x{h_tr:.1f} vs eval-view "
+              f"{w_ev:.1f}x{h_ev:.1f} (w-ratio {ratio:.2f})")
+        if ratio > 2.0:
+            print("  [parity] FATAL: train/eval box scale diverged >2x - fix the "
+                  "transform before training (v38 root-cause class)")
+            sys.exit(2)
+
     crit = DetectionLoss(num_classes=20, reg_max=mcfg["head"]["reg_max"],
                          box_w=mcfg["loss"]["box_weight"], cls_w=mcfg["loss"]["cls_weight"],
                          dfl_w=mcfg["loss"]["dfl_weight"], obj_w=mcfg["loss"]["obj_weight"],
@@ -139,6 +184,20 @@ def main():
                      "ema_decay": 0.99, "val_interval": 10, "mosaic_close_epochs": 30,
                      "mosaic": 0.0, "accum": 1}}
     tr = Trainer(model, crit, ds, cfg=cfg, device=args.device, save_dir=args.save_dir)
+
+    # ---- fail-fast probe: eval + full diagnostics at epoch 30 ----
+    # catches eval-harness crashes and gives score/IoU signal in ~1 min instead
+    # of waiting the full 300 epochs (v39 lost its entire run to an eval crash).
+    # Implemented as a val_eval_fn shim: trainer fires it when (epoch+1) %
+    # val_interval == 0 and tr.epoch == 30, i.e. the (30+1)=31st epoch boundary.
+    def probe_at_epoch30(model_ema):
+        if tr.epoch != 30:
+            return None
+        m = evaluate_overfit(tr.model, OverfitSubset(args.root, n=args.n, transform=None),
+                             args.device, args.img_size)
+        print(f"  [probe@{tr.epoch}] mAP@0.5 = {m['mAP']:.4f} [scoring: {m['scoring']}]")
+        return None                      # don't affect trainer history/best tracking
+    tr.val_eval_fn = probe_at_epoch30
     tr.fit(args.epochs)
     # gate evals the RAW model: with only ~600 steps across 20 images the EMA
     # (decay 0.99) still lags; raw weights reflect actual learned fit.
