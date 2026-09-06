@@ -84,15 +84,16 @@ def evaluate_overfit(model, ds, device, img_size=320):
 
         r, pw, ph = [float(v) for v in t2["rescale"]]
         per_sc = []
+        # max_det=400 (v54): the 100-cap was dropping true anchors - several
+        # images hit it (preds/image [100,95,100,100,100]) and a GT anchor
+        # scored below the cut is lost permanently. AP is ranking-based, so
+        # extra low-scored FPs sort below and don't hurt; capping recall does.
         for keep_mask, ss, ll in ((sc_cls[0] > 0.01, sc_cls[0], lbl_cls[0]),
                                   (sc_prod[0] > 0.01, sc_prod[0], lbl_prod[0])):
             bb = boxes[0][keep_mask]
             s_, l_ = ss[keep_mask], ll[keep_mask]
-            # cap on the NUMBER OF SCORES (not box elements): bb is (M,4) so
-            # numel() counts 4x - `bb.numel() > 100` fired at 26 detections and
-            # topk(100) would crash (v39 bug 2). Matches Postprocessor semantics.
-            if s_.numel() > 100:
-                topv, topi = s_.topk(100)
+            if s_.numel() > 400:
+                topv, topi = s_.topk(400)
                 bb, s_, l_ = bb[topi], topv, l_[topi]
             bb = bb.clone()
             if bb.numel():
