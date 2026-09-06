@@ -194,29 +194,23 @@ class DetectionLoss(nn.Module):
                 cls_target[bi, fg_mask, lbl] = 1.0
                 obj_target[bi, fg_mask, 0] = 1.0
 
-        # cls branch: classification only - BCE over the o2o positives (one-hot).
-        # Background suppression is the obj branch's job (balanced below), so cls
-        # is not diluted by ~39000 (anchor,class) background pairs.
+        # cls: standard YOLOv8/v10 BCE over ALL anchors (pos=1, bg=0), normalized
+        # by num_pos. Positives dominate (50*~3.5/50=3.5) while bg contributes a
+        # small nonzero term (1950*~0.0008/50=0.03) that grows if the model fires
+        # on background - so positives get full weight AND bg is suppressed.
+        # (Normalizing by B*N starves pos; normalizing pos/neg separately zeroes bg.)
         logits = pred_cls.view(B, N, self.nc)
-        pos_mask = cls_target > 0
-        n_pos = max(1, int(pos_mask.sum()))
-        bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="none")
-        loss_cls = bce[pos_mask].sum() / n_pos
+        bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="sum")
+        loss_cls = bce / max(n_pos_main, 1)
 
-        # obj branch: balanced BCE over all anchors - pos=1 on the o2o positives,
-        # neg=0 on background. Normalizing each side by its own count gives the
-        # branch real gradient to fire on positives AND suppress background.
-        obj_logits = pred_obj.view(B, N)
-        obj_bce = F.binary_cross_entropy_with_logits(obj_logits, obj_target.view(B, N),
-                                                     reduction="none")
-        obj_pos = obj_target.view(B, N) > 0
-        n_obj_pos = max(1, int(obj_pos.sum()))
-        n_obj_neg = max(1, int((~obj_pos).sum()))
-        loss_obj = obj_bce[obj_pos].sum() / n_obj_pos + obj_bce[~obj_pos].sum() / n_obj_neg
+        # obj: same YOLOv8-style BCE over all anchors / num_pos (not used at
+        # inference - YOLOv10 is cls-only NMS-free - but keeps the branch trained).
+        obj_bce = F.binary_cross_entropy_with_logits(
+            pred_obj.view(B, N), obj_target.view(B, N), reduction="sum")
+        loss_obj = obj_bce / max(n_pos_main, 1)
 
         loss_box = self.box_w * loss_box / max(n_pos_main, 1)
         loss_dfl = self.dfl_w * loss_dfl / max(n_pos_main, 1)
-        # cls and obj are already balanced (normalized by their own counts).
         loss_cls = self.cls_w * loss_cls
         loss_obj = self.obj_w * loss_obj
         n_imgs_pos = max(1, sum(1 for t in targets if t["boxes"].numel() > 0))
