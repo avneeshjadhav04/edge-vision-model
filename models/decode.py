@@ -61,7 +61,7 @@ class Postprocessor:
     are rare; we still apply an optional light score-threshold + class-argmax.
     """
 
-    def __init__(self, num_classes, strides=(8, 16, 32), reg_max=8, score_thresh=0.25,
+    def __init__(self, num_classes, strides=(8, 16, 32), reg_max=16, score_thresh=0.25,
                  max_det=300, use_obj=False):
         self.nc = num_classes
         self.strides = strides
@@ -90,6 +90,10 @@ class Postprocessor:
         obj = torch.cat(obj_flat, 1)                     # (B,N,1)
 
         boxes = dfl_decode(box, self.reg_max, proj, anchors, strides)  # (B,N,4)
+        boxes = torch.stack([boxes[..., 0].clamp(0, anchors[:, 0].max() * 2),
+                             boxes[..., 1].clamp(0, anchors[:, 1].max() * 2),
+                             boxes[..., 2].clamp(0, anchors[:, 0].max() * 2),
+                             boxes[..., 3].clamp(0, anchors[:, 1].max() * 2)], -1)
         cls_scores = cls.sigmoid()                       # (B,N,nc)
         if self.use_obj:
             scores = cls_scores * obj.sigmoid()          # (B,N,nc)

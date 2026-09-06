@@ -39,7 +39,7 @@ class EVM(nn.Module):
         return out
 
     @torch.no_grad()
-    def predict(self, x, score_thresh=0.25, max_det=300, use_obj=True):
+    def predict(self, x, score_thresh=0.25, max_det=300, use_obj=False):
         """NMS-free inference (torch path, used by demo/tests)."""
         self.post.score_thresh = score_thresh
         self.post.max_det = max_det

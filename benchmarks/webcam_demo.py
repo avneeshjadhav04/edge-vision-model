@@ -35,6 +35,9 @@ def main():
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=720)
     ap.add_argument("--img-size", type=int, default=640)
+    ap.add_argument("--reg-max", type=int, default=16,
+                    help="DFL bins per box side; must match the exported model "
+                         "(configs/model_nano.yaml: head.reg_max)")
     ap.add_argument("--score", type=float, default=0.35)
     ap.add_argument("--max-det", type=int, default=100)
     args = ap.parse_args()
@@ -71,7 +74,8 @@ def main():
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         x, r, pads, orig = preprocess(rgb, args.img_size)
         raw = sess.run(None, {inp: x})
-        dets = decode_outputs(raw, args.img_size, num_classes=args.num_classes,
+        dets = decode_outputs(raw, args.img_size, reg_max=args.reg_max,
+                              num_classes=args.num_classes, use_obj=False,
                               score_thresh=args.score, max_det=args.max_det)[0]
         bb = rescale(dets["pred_boxes"], r, pads, orig) if dets["pred_boxes"].size else dets["pred_boxes"]
         now = time.perf_counter()

@@ -18,8 +18,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.decode import make_anchors, bbox_iou
-from .matcher import (align_metric, select_candidates, select_candidates_in_gxy)
+from models.decode import make_anchors, bbox_iou, dfl_decode
+from .matcher import (align_metric, select_candidates, select_candidates_in_gxy,
+                      cost_matrix, greedy_hungarian)
 
 
 def ciou(g, p, eps=1e-9):
@@ -34,7 +35,8 @@ def ciou(g, p, eps=1e-9):
     ex1 = torch.min(g[:, 0], p[:, 0]); ey1 = torch.min(g[:, 1], p[:, 1])
     ex2 = torch.max(g[:, 2], p[:, 2]); ey2 = torch.max(g[:, 3], p[:, 3])
     cw = (ex2 - ex1).clamp(min=eps); ch = (ey2 - ey1).clamp(min=eps)
-    rho2 = ((ex1 + ex2 - g[:, 0] - p[:, 0]) ** 2 + (ey1 + ey2 - g[:, 1] - p[:, 1]) ** 2) / 4
+    rho2 = ((g[:, 0] + g[:, 2] - p[:, 0] - p[:, 2]) ** 2 +
+            (g[:, 1] + g[:, 3] - p[:, 1] - p[:, 3]) ** 2) / 4
     v = (4 / math.pi ** 2) * torch.pow(torch.atan(agw / agh.clamp(min=eps)) -
                                        torch.atan(apw / aph.clamp(min=eps)), 2)
     with torch.no_grad():
@@ -52,6 +54,26 @@ def dfl_loss(pred_dist, target, reg_max, eps=1e-9):
     loss = -(wl * logp.gather(1, tl.view(-1, 1)).squeeze(1) +
              wr * logp.gather(1, tr.view(-1, 1)).squeeze(1))
     return loss.mean()
+
+
+def _with_tiny_gt_fallback(cand, gboxes, anchors, strides, glabels, eps=1e-9):
+    """Ensure every GT keeps at least one candidate anchor.
+
+    GTs smaller than one stride cell can have zero center-inside anchors; for
+    those (rows of `cand` all-False) assign the single nearest anchor by
+    center distance in stride units. Returns (cand, glabels) unchanged otherwise.
+    """
+    empty = ~cand.any(dim=1)
+    if not empty.any():
+        return cand, glabels
+    M, N = cand.shape
+    gx = (gboxes[:, 0] + gboxes[:, 2]) / 2
+    gy = (gboxes[:, 1] + gboxes[:, 3]) / 2
+    gxy = torch.stack([gx, gy], 1)                                   # (M,2)
+    d = ((gxy[:, None, :] - anchors[None, :, :]) / strides).norm(dim=2)  # (M,N)
+    near = d.argmin(dim=1)                                           # (M,)
+    cand[empty, near[empty]] = True
+    return cand, glabels
 
 
 class DetectionLoss(nn.Module):
@@ -128,7 +150,6 @@ class DetectionLoss(nn.Module):
             ac = aux_cls[bi]
 
             # decoded pred boxes for matching
-            from models.decode import dfl_decode
             pb_dec = dfl_decode(pb.unsqueeze(0), self.reg_max, proj,
                                 anchors, strides.view(-1, 1)).squeeze(0)
             ab_dec = dfl_decode(ab.unsqueeze(0), self.reg_max, proj,
@@ -138,7 +159,12 @@ class DetectionLoss(nn.Module):
             align_a, iou_a = align_metric(ab_dec, ac, gboxes, glabels, self.alpha, self.beta)
             cand = select_candidates(align_a, iou_a, self.o2m_topk)     # (M,N) bool
             cand = cand & select_candidates_in_gxy(gboxes, anchors, strides.view(-1, 1))
-            align_norm = align_a / (align_a.amax(dim=1, keepdim=True).clamp(min=1e-6))
+            # Tiny-GT fallback: a GT smaller than one stride cell can have zero
+            # center-inside candidates (unsupervised in both heads) - give it its
+            # nearest anchor by center distance so it still gets box/cls gradient.
+            cand, _ = _with_tiny_gt_fallback(
+                cand, gboxes, anchors, strides.view(-1, 1), glabels)
+            align_norm = (align_a / (align_a.amax(dim=1, keepdim=True).clamp(min=1e-6))).detach()
             # aux positives: for each GT, its candidate anchors (dedup across GTs: keep best)
             flat_scores = torch.where(cand, align_norm, align_norm.new_full((), -1.0))
             top_vals, top_idx = flat_scores.max(dim=0)                   # (N,)
@@ -164,37 +190,34 @@ class DetectionLoss(nn.Module):
                 loss_aux = loss_aux + (-(tgt * logp.gather(1, glabels[aux_gts].view(-1, 1)).squeeze(1))).sum()
 
             # ---------- one-to-one (main) ----------
-            # YOLOv10: the o2o head is supervised by the o2m assignment - for each
-            # GT, the top-1 o2m candidate anchor becomes the o2o positive. Matching
-            # o2o on its OWN (initially bad) boxes gives unstable targets and no
-            # gradient; deriving from the healthy o2m head stabilizes it.
-            # cand: (M,N) bool of o2m candidates; pick best align_a anchor per GT.
-            best_a, best_anchor = align_a.masked_fill(~cand, -1e9).max(dim=1)  # (M,)
-            valid = best_a > -1e8
-            fg_mask = torch.zeros(N, dtype=torch.bool, device=device)
+            # Task-aligned cost (lower = better) built on the o2m alignment, then
+            # greedy Hungarian: lowest cost first, one anchor per GT, one GT per
+            # anchor. Per-GT argmax + scatter (previous) was last-write-wins -
+            # colliding GTs silently lost their only o2o positive.
+            cost = cost_matrix(align_a, iou_a, ac, glabels, self.alpha, self.beta)
+            cost = cost.masked_fill(~cand, 1e9)
+            assign = greedy_hungarian(cost)                     # (M,) anchor idx or -1
+            fg_mask = assign >= 0
             gt_of_anchor = torch.full((N,), -1, dtype=torch.long, device=device)
-            if valid.any():
-                sel_anchors = best_anchor[valid]
-                sel_gts = torch.nonzero(valid).squeeze(1)
-                fg_mask[sel_anchors] = True
-                gt_of_anchor[sel_anchors] = sel_gts
+            if fg_mask.any():
+                gt_of_anchor[assign[fg_mask]] = torch.nonzero(fg_mask).squeeze(1)
             n_pos_main += int(fg_mask.sum())
 
             if fg_mask.any():
                 fg_anchors = torch.nonzero(fg_mask).squeeze(1)
                 fg_gts = gt_of_anchor[fg_anchors]
-                mpb = pb_dec[fg_mask]
+                mpb = pb_dec[fg_anchors]
                 mgb = gboxes[fg_gts]
                 loss_box = loss_box + ciou(mgb, mpb).sum()
-                dist_t = self._dist_targets(mgb, anchors[fg_mask], strides.view(-1, 1)[fg_mask])
-                d_raw = pb[fg_mask].view(-1, 4, self.reg_max)
+                dist_t = self._dist_targets(mgb, anchors[fg_anchors], strides.view(-1, 1)[fg_anchors])
+                d_raw = pb[fg_anchors].view(-1, 4, self.reg_max)
                 loss_dfl = loss_dfl + sum(dfl_loss(d_raw[:, k], dist_t[:, k], self.reg_max)
                                           for k in range(4))
                 # one-to-one main head: matched class is a hard positive (1.0) in
                 # the full-BCE target; background anchors stay 0 (suppressed).
                 lbl = glabels[fg_gts]
-                cls_target[bi, fg_mask, lbl] = 1.0
-                obj_target[bi, fg_mask, 0] = 1.0
+                cls_target[bi, fg_anchors, lbl] = 1.0
+                obj_target[bi, fg_anchors, 0] = 1.0
 
         # cls: BCE over ONLY the o2o positives (YOLOv10). The o2o head must fire
         # confidently on its ~50 assigned anchors; the dense o2m assignment (~500)

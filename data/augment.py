@@ -68,7 +68,15 @@ class Mosaic:
                 bb[:, [1, 3]] = bb[:, [1, 3]] * r - oy
                 bb[:, [0, 2]] += x0
                 bb[:, [1, 3]] += y0
-                keep = clamp_boxes(bb, s * 2, s * 2)
+                # clip to the TILE rect (not the full canvas) so boxes landing
+                # outside their quadrant do not point at another tile's content,
+                # then drop tiny remnants by area ratio (YOLO box_candidates).
+                bb[:, [0, 2]] = bb[:, [0, 2]].clamp(x0, x0 + qw)
+                bb[:, [1, 3]] = bb[:, [1, 3]].clamp(y0, y0 + qh)
+                area_tile = float(qw * qh)
+                ar = ((bb[:, 2] - bb[:, 0]).clamp(min=0) *
+                      (bb[:, 3] - bb[:, 1]).clamp(min=0)) / area_tile
+                keep = (bb[:, 2] > bb[:, 0]) & (bb[:, 3] > bb[:, 1]) & (ar >= 0.1)
                 if keep.any():
                     boxes_all.append(bb[keep])
                     labels_all.append(tgt["labels"][keep])
@@ -97,9 +105,11 @@ class RandomAffineBoxes:
         r = random.uniform(1 - self.scale, 1 + self.scale)
         tx = random.uniform(-self.translate, self.translate) * s
         ty = random.uniform(-self.translate, self.translate) * s
-        # affine: scale about center + translate
-        M = np.array([[r, 0, tx + (s / 2) * (1 - r)],
-                      [0, r, ty + (s / 2) * (1 - r)]], dtype=np.float64)
+        # affine: scale about the CANVAS center (mosaic produces 2s x 2s; a plain
+        # image is s x s) + translate, then crop to s x s
+        ch, cw = H / 2, W / 2
+        M = np.array([[r, 0, tx + cw * (1 - r)],
+                      [0, r, ty + ch * (1 - r)]], dtype=np.float64)
         img = cv2.warpAffine(img, M, (s, s), flags=cv2.INTER_LINEAR,
                              borderValue=(114, 114, 114))
         b = target["boxes"]
@@ -113,8 +123,18 @@ class RandomAffineBoxes:
             if random.random() < self.fliplr:
                 nb[:, [0, 2]] = s - nb[:, [2, 0]]
                 img = np.ascontiguousarray(img[:, ::-1])
-            keep = clamp_boxes(nb, s, s)
-            target = {"boxes": nb[keep], "labels": target["labels"][keep]}
+            pre_ar = ((b[:, 2] - b[:, 0]).clamp(min=0) * (b[:, 3] - b[:, 1]).clamp(min=0)).clamp(min=1)
+            nb[:, [0, 2]] = nb[:, [0, 2]].clamp(0, s)
+            nb[:, [1, 3]] = nb[:, [1, 3]].clamp(0, s)
+            if nb.numel():
+                ar = ((nb[:, 2] - nb[:, 0]).clamp(min=0) *
+                      (nb[:, 3] - nb[:, 1]).clamp(min=0)) / pre_ar
+                keep = (nb[:, 2] > nb[:, 0]) & (nb[:, 3] > nb[:, 1]) & (ar >= 0.1)
+                nb = nb[keep]
+                labels = target["labels"][keep]
+            else:
+                labels = torch.zeros(0, dtype=torch.long)
+            target = {"boxes": nb, "labels": labels}
         return img, target
 
 
@@ -150,9 +170,11 @@ class TrainTransform:
         self.mosaic_dataset = dataset_for_mosaic
 
     def _load_random(self):
+        """One random raw image + boxes for mosaic tiling (no per-image transform)."""
         ds = self.mosaic_dataset
         if ds is None:
-            return None
+            return np.full((64, 64, 3), 114, np.uint8), {"boxes": torch.zeros(0, 4),
+                                                         "labels": torch.zeros(0, dtype=torch.long)}
         idx = random.randrange(len(ds))
         try:
             return ds.get_raw(idx)
@@ -172,15 +194,7 @@ class TrainTransform:
         return img, target
 
     def _mosaic_extra(self, idx):
-        ds = self.mosaic_dataset
-        if ds is None:
-            return np.full((64, 64, 3), 114, np.uint8), {"boxes": torch.zeros(0, 4),
-                                                          "labels": torch.zeros(0, dtype=torch.long)}
-        j = random.randrange(len(ds))
-        img, tgt = ds[j]
-        if isinstance(img, torch.Tensor):
-            img = (img.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-        return img, tgt
+        return self._load_random()
 
 
 class EvalTransform:

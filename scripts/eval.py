@@ -27,6 +27,9 @@ def main():
     ap.add_argument("--root", required=True)
     ap.add_argument("--config", default="model_nano")
     ap.add_argument("--weights", required=True)
+    ap.add_argument("--ema", action="store_true",
+                    help="evaluate the EMA weights from the checkpoint (best.pt "
+                         "already stores EMA weights; use for last.pt)")
     ap.add_argument("--img-size", type=int, default=640)
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--score-thresh", type=float, default=0.01)
@@ -38,7 +41,10 @@ def main():
     nc = dcfg["num_classes"]
     model = build_model(mcfg, num_classes=nc)
     sd = torch.load(args.weights, map_location="cpu", weights_only=False)
-    state = sd.get("model", sd)
+    if args.ema and "ema" in sd:
+        state = sd["ema"]
+    else:
+        state = sd.get("model", sd)
     model.load_state_dict(state, strict=True)
     model.to(args.device).eval()
 

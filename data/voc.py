@@ -99,6 +99,19 @@ class VOCDataset(Dataset):
         img = cv2.imread(img_path)
         return cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if img is not None else None
 
+    def get_raw(self, idx):
+        """Raw image + untransformed boxes (mosaic source; avoids recursing into
+        the full per-image transform)."""
+        img_path, xml_path = self.items[idx]
+        import cv2
+        img = cv2.imread(img_path)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        boxes, labels, difficult = parse_voc_xml(xml_path)
+        target = {"boxes": torch.from_numpy(boxes), "labels": torch.from_numpy(labels),
+                  "difficult": torch.from_numpy(difficult),
+                  "orig_size": torch.tensor([img.shape[0], img.shape[1]])}
+        return img, target
+
 
 class OverfitSubset(VOCDataset):
     """First N images (with >=1 valid box each) for overfit sanity."""

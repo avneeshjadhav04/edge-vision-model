@@ -11,8 +11,8 @@ def make_anchors_np(shape_hw, stride):
     return np.stack([ax, ay], 1)
 
 
-def decode_outputs(raw, img_size=640, strides=(8, 16, 32), reg_max=8,
-                   num_classes=80, score_thresh=0.25, use_obj=True, max_det=300):
+def decode_outputs(raw, img_size=640, strides=(8, 16, 32), reg_max=16,
+                   num_classes=80, score_thresh=0.25, use_obj=False, max_det=300):
     """raw: 9 arrays (box_l*, cls_l*, obj_l*) each (B, C, H, W).
     Returns list per image of dict(boxes xyxy, scores, labels)."""
     boxes = raw[0::3]
@@ -48,6 +48,10 @@ def decode_outputs(raw, img_size=640, strides=(8, 16, 32), reg_max=8,
         if best.size > max_det:
             top = np.argsort(-best)[:max_det]
             xyxy, best, labels = xyxy[top], best[top], labels[top]
+        # clip to the letterboxed input so rescale stays in-bounds
+        if xyxy.size:
+            xyxy[:, [0, 2]] = xyxy[:, [0, 2]].clip(0, img_size)
+            xyxy[:, [1, 3]] = xyxy[:, [1, 3]].clip(0, img_size)
         results.append({"pred_boxes": xyxy, "scores": best, "labels": labels})
     return results
 

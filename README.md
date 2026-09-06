@@ -26,7 +26,7 @@ flowchart LR
     F --> G["PAN-lite neck (64)\ntop-down + bottom-up"]
     D --> G
     E --> G
-    G --> H["Main head (one-to-one)\nbox DFL 4x8 + cls + obj\nP3/P4/P5"]
+    G --> H["Main head (one-to-one)\nbox DFL 4x16 + cls + obj\nP3/P4/P5"]
     G --> I["Aux head (one-to-many)\ntraining only, stripped at export"]
     H --> J["NMS-free decode\ndist2bbox + top-k"]
 ```
@@ -39,7 +39,7 @@ flowchart LR
 - **CPU-friendly ops only**: plain 3×3/1×1 convs, SiLU, nearest-neighbor FPN.
   No attention, no deformable convs, no dynamic ops.
 - **Losses** (`losses/`): CIoU + DFL + BCE cls (IoU-aware soft targets) + BCE objectness.
-- **Anchor-free DFL decode**: box = per-side softmax distribution over 8 bins.
+- **Anchor-free DFL decode**: box = per-side softmax distribution over 16 bins (`reg_max: 16`).
 
 ## Repository layout
 ```

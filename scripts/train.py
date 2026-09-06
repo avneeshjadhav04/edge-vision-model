@@ -97,6 +97,8 @@ def main():
                                transform=train_tf)
         eval_fn = make_coco_eval_fn(args.root, args.img_size, args.device,
                                     dcfg["val_year"])
+    # mosaic tiles pull RAW images (no per-image transform) from the same dataset
+    train_tf.mosaic_dataset = train_ds
 
     model = build_model(mcfg, num_classes=nc)
     params = count_params(model)

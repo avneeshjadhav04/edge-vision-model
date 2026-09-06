@@ -45,3 +45,20 @@ class CocoDataset(Dataset):
         if self.transform is not None:
             img, target = self.transform(img, target)
         return img, target
+
+    def get_raw(self, idx):
+        """Raw image + untransformed boxes (mosaic source)."""
+        import cv2
+        img_id = self.ids[idx]
+        rec = self.index[img_id]
+        path = os.path.join(self.img_dir, rec["file_name"])
+        img = cv2.imread(path)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        boxes = rec["boxes"].clone()
+        labels = rec["labels"].clone()
+        h, w = img.shape[:2]
+        keep = clamp_boxes(boxes, w, h)
+        target = {"boxes": boxes[keep], "labels": labels[keep],
+                  "image_id": torch.tensor(img_id),
+                  "orig_size": torch.tensor([h, w])}
+        return img, target

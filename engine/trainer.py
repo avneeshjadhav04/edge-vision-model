@@ -2,8 +2,10 @@
 import json
 import math
 import os
+import random
 import time
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -11,9 +13,32 @@ from .ema import ModelEMA
 from .inference import run_inference
 
 
+def seed_everything(seed=0):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+def _param_groups(model, weight_decay):
+    """No weight decay on BN params and biases (standard detector practice)."""
+    decay, no_decay = [], []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if p.ndim <= 1 or name.endswith(".bias"):          # BN/bias (incl. 1x1 conv bias)
+            no_decay.append(p)
+        else:
+            decay.append(p)
+    return [{"params": decay, "weight_decay": weight_decay},
+            {"params": no_decay, "weight_decay": 0.0}]
+
+
 class Trainer:
     def __init__(self, model, loss_fn, train_ds=None, val_eval_fn=None, val_loader=None,
-                 cfg=None, device="cuda", save_dir="runs/train", log_name="log"):
+                 cfg=None, device="cuda", save_dir="runs/train", log_name="log",
+                 seed=0):
+        seed_everything(seed)
         self.model = model.to(device)
         self.loss_fn = loss_fn.to(device)
         self.device = device
@@ -21,22 +46,22 @@ class Trainer:
         tc = self.cfg.get("train", {})
         self.h = tc
         self.train_ds = train_ds
-        self.h = tc
         self.save_dir = save_dir
         os.makedirs(save_dir, exist_ok=True)
         self.val_eval_fn = val_eval_fn
         self.val_loader = val_loader
+        self.seed = seed
+        self.generator = torch.Generator().manual_seed(seed)
 
-        params = [p for p in self.model.parameters() if p.requires_grad]
+        wd = float(tc.get("weight_decay", 5e-4))
+        groups = _param_groups(self.model, wd)
         opt_name = tc.get("optimizer", "sgd")
         if opt_name == "sgd":
-            self.optimizer = torch.optim.SGD(params, lr=float(tc.get("lr0", 0.05)),
+            self.optimizer = torch.optim.SGD(groups, lr=float(tc.get("lr0", 0.05)),
                                              momentum=float(tc.get("momentum", 0.937)),
-                                             weight_decay=float(tc.get("weight_decay", 5e-4)),
                                              nesterov=True)
         else:
-            self.optimizer = torch.optim.AdamW(params, lr=float(tc.get("lr0", 1e-3)),
-                                               weight_decay=float(tc.get("weight_decay", 5e-4)))
+            self.optimizer = torch.optim.AdamW(groups, lr=float(tc.get("lr0", 1e-3)))
         self.ema = ModelEMA(self.model, float(tc.get("ema_decay", 0.9999)))
         self.amp = bool(tc.get("amp", True)) and device.startswith("cuda")
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp)
@@ -66,7 +91,7 @@ class Trainer:
     def save(self, name="last.pt", extra=None):
         sd = {"model": self.model.state_dict(), "ema": self.ema.state_dict(),
               "optimizer": self.optimizer.state_dict(), "scaler": self.scaler.state_dict(),
-              "epoch": self.epoch, "history": self.history}
+              "epoch": getattr(self, "epoch", 0), "history": self.history, "best": self.best}
         if extra:
             sd.update(extra)
         torch.save(sd, os.path.join(self.save_dir, name))
@@ -81,6 +106,7 @@ class Trainer:
             self.scaler.load_state_dict(sd["scaler"])
             self.start_epoch = sd.get("epoch", 0) + 1
         self.history = sd.get("history", [])
+        self.best = sd.get("best", self.best)
 
     # ----- train loop -----
     def fit(self, epochs):
@@ -88,18 +114,36 @@ class Trainer:
         accum = int(self.h.get("accum", 1))
         bs = int(self.h.get("batch_size", 32))
         nw = int(self.h.get("workers", 8))
-        dl = DataLoader(train_ds_wrap(self.train_ds), batch_size=bs, shuffle=True,
-                        num_workers=nw, collate_fn=_collate, pin_memory=True,
-                        drop_last=True, persistent_workers=nw > 0)
+        mosaic_close = int(self.h.get("mosaic_close_epochs", 10))
+        mosaic_p0 = float(self.h.get("mosaic", 1.0))
+
+        def make_loader():
+            # dataset-side mosaic phase: worker processes fork/spawn AFTER this,
+            # so the flag they snapshot is correct for the epochs this loader serves
+            if hasattr(self.train_ds, "transform") and hasattr(self.train_ds.transform, "mosaic"):
+                self.train_ds.transform.mosaic.p = (
+                    0.0 if mosaic_close > 0 and epoch >= epochs - mosaic_close else mosaic_p0)
+            return DataLoader(train_ds_wrap(self.train_ds), batch_size=bs, shuffle=True,
+                              num_workers=nw, collate_fn=_collate, pin_memory=True,
+                              drop_last=True, persistent_workers=nw > 0,
+                              generator=self.generator,
+                              worker_init_fn=_worker_init_fn)
+
+        dl = make_loader()
         n_it = len(dl)
         self.n_it = n_it
-        mosaic_close = int(self.h.get("mosaic_close_epochs", 10))
         for epoch in range(self.start_epoch, epochs):
             self.epoch = epoch
             self.model.train()
             self.loss_fn.set_epoch(epoch)
-            if hasattr(self.train_ds, "transform") and hasattr(self.train_ds.transform, "mosaic"):
-                self.train_ds.transform.mosaic.p = 0.0 if epoch >= epochs - mosaic_close else float(self.h.get("mosaic", 1.0))
+            # persistent workers snapshot the transform: rebuild the loader when
+            # mosaic switches off (else the shutdown epoch is a no-op)
+            mosaic_now = 0.0 if epoch >= epochs - mosaic_close else mosaic_p0
+            if epoch > self.start_epoch and mosaic_now != getattr(self, "_mosaic_last", mosaic_p0):
+                del dl
+                dl = make_loader()
+                self.n_it = len(dl)
+            self._mosaic_last = mosaic_now
             m_it = 0.0
             m_comp = {}
             t0 = time.time()
@@ -127,6 +171,10 @@ class Trainer:
                 n_bad = 0
                 self.scaler.scale(loss / accum).backward()
                 if (it + 1) % accum == 0 or it == n_it - 1:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(
+                        [p for g in self.optimizer.param_groups for p in g["params"]],
+                        max_norm=float(self.h.get("grad_clip", 10.0)))
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                     self.optimizer.zero_grad(set_to_none=True)
@@ -147,7 +195,9 @@ class Trainer:
                 tag = f"  mAP={metrics.get('mAP', float('nan')):.4f}"
                 if metrics.get("mAP", -1) > self.best:
                     self.best = metrics["mAP"]
-                    self.save("best.pt")
+                    # best.pt carries the EMA weights (they are what mAP selected)
+                    self.save("best.pt", extra={"model": self.ema.ema.state_dict(),
+                                                "is_ema": True})
                 print(f"epoch {epoch:4d} loss={m_it / max(1, n_it):8.3f}{tag} "
                       f"box={metrics.get('box',0):7.3f} dfl={metrics.get('dfl',0):7.3f} "
                       f"cls={metrics.get('cls',0):7.3f} obj={metrics.get('obj',0):7.3f} "
@@ -167,6 +217,12 @@ class Trainer:
 def _collate(batch):
     from data.common import collate_batch
     return collate_batch(batch)
+
+
+def _worker_init_fn(worker_id):
+    seed = torch.initial_seed() % 2 ** 32
+    random.seed(seed + worker_id)
+    np.random.seed((seed + worker_id) % 2 ** 32)
 
 
 def train_ds_wrap(ds):
