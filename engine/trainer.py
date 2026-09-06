@@ -117,7 +117,7 @@ class Trainer:
         mosaic_close = int(self.h.get("mosaic_close_epochs", 10))
         mosaic_p0 = float(self.h.get("mosaic", 1.0))
 
-        def make_loader():
+        def make_loader(epoch=0):
             # dataset-side mosaic phase: worker processes fork/spawn AFTER this,
             # so the flag they snapshot is correct for the epochs this loader serves
             if hasattr(self.train_ds, "transform") and hasattr(self.train_ds.transform, "mosaic"):
@@ -129,7 +129,7 @@ class Trainer:
                               generator=self.generator,
                               worker_init_fn=_worker_init_fn)
 
-        dl = make_loader()
+        dl = make_loader(self.start_epoch)
         n_it = len(dl)
         self.n_it = n_it
         for epoch in range(self.start_epoch, epochs):
@@ -141,7 +141,7 @@ class Trainer:
             mosaic_now = 0.0 if epoch >= epochs - mosaic_close else mosaic_p0
             if epoch > self.start_epoch and mosaic_now != getattr(self, "_mosaic_last", mosaic_p0):
                 del dl
-                dl = make_loader()
+                dl = make_loader(epoch)
                 self.n_it = len(dl)
             self._mosaic_last = mosaic_now
             m_it = 0.0
