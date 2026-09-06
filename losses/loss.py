@@ -194,26 +194,31 @@ class DetectionLoss(nn.Module):
                 cls_target[bi, fg_mask, lbl] = 1.0
                 obj_target[bi, fg_mask, 0] = 1.0
 
-        # balanced BCE over all anchors: normalize positive and negative terms by
-        # their own counts so the ~50 o2o positives get full gradient weight despite
-        # the ~1950 background (plain BCE starves pos; focal gamma=2 kills neg).
+        # cls branch: classification only - BCE over the o2o positives (one-hot).
+        # Background suppression is the obj branch's job (balanced below), so cls
+        # is not diluted by ~39000 (anchor,class) background pairs.
         logits = pred_cls.view(B, N, self.nc)
-        bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="none")
         pos_mask = cls_target > 0
         n_pos = max(1, int(pos_mask.sum()))
-        n_neg = max(1, int((~pos_mask).sum()))
-        loss_cls = bce[pos_mask].sum() / n_pos + bce[~pos_mask].sum() / n_neg
+        bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="none")
+        loss_cls = bce[pos_mask].sum() / n_pos
 
-        # objectness BCE over all anchors
-        loss_obj = F.binary_cross_entropy_with_logits(
-            pred_obj.view(B, N), obj_target.view(B, N), reduction="sum")
+        # obj branch: balanced BCE over all anchors - pos=1 on the o2o positives,
+        # neg=0 on background. Normalizing each side by its own count gives the
+        # branch real gradient to fire on positives AND suppress background.
+        obj_logits = pred_obj.view(B, N)
+        obj_bce = F.binary_cross_entropy_with_logits(obj_logits, obj_target.view(B, N),
+                                                     reduction="none")
+        obj_pos = obj_target.view(B, N) > 0
+        n_obj_pos = max(1, int(obj_pos.sum()))
+        n_obj_neg = max(1, int((~obj_pos).sum()))
+        loss_obj = obj_bce[obj_pos].sum() / n_obj_pos + obj_bce[~obj_pos].sum() / n_obj_neg
 
         loss_box = self.box_w * loss_box / max(n_pos_main, 1)
         loss_dfl = self.dfl_w * loss_dfl / max(n_pos_main, 1)
-        # cls is balanced (pos/neg normalized above); obj is full-BCE over all anchors.
-        n_anchors = max(1, B * N)
+        # cls and obj are already balanced (normalized by their own counts).
         loss_cls = self.cls_w * loss_cls
-        loss_obj = self.obj_w * loss_obj / n_anchors
+        loss_obj = self.obj_w * loss_obj
         n_imgs_pos = max(1, sum(1 for t in targets if t["boxes"].numel() > 0))
         loss_aux = self.box_w * loss_aux / n_imgs_pos
 
