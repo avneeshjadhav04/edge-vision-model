@@ -252,20 +252,16 @@ class DetectionLoss(nn.Module):
                 cls_target[bi, fg_anchors, lbl] = 1.0
                 obj_target[bi, fg_anchors, 0] = 1.0
 
-        # cls: balanced BCE over ALL anchors (v33). v32's pos-only BCE left the
-        # ~1950 background anchors unsupervised: all 2000 fired at score 1.0.
-        # Positives (/n_pos) keep the ~50 o2o anchors confident; background
-        # (/n_neg, own count so ~1950 bg anchors don't swamp them) provides the
-        # suppression gradient. The obj branch proves the head can separate
-        # (obj loss 0.33 -> pos p~0.86 / bg p~0.13).
+        # cls: YOLOv8 normalization (v35) - BCE over ALL anchors divided by
+        # n_pos_total. Background mass = (n_bg/n_pos) * mean_bce ~= 39x the
+        # positive mass at ~50 pos / 1950 bg: strong, decisive suppression.
+        # v33's balanced-by-count split gave bg only 23% of gradient mass ->
+        # 837-1578/2000 anchors kept firing; v34 (cls*obj) scored worse because
+        # the noisy obj maps reordered scores harmfully.
         logits = pred_cls.view(B, N, self.nc)
         bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="none")
-        anchor_is_pos = cls_target.sum(dim=2) > 0                       # (B,N)
-        pos_mask = anchor_is_pos.unsqueeze(2).expand_as(cls_target)
-        n_pos = max(1, int(anchor_is_pos.sum()) * self.nc)
-        n_neg = max(1, int((~anchor_is_pos).sum()) * self.nc)
-        loss_cls = (bce[pos_mask].sum() / n_pos +
-                    bce[~pos_mask].sum() / n_neg)
+        n_pos_cls = max(1, int((cls_target.sum(dim=2) > 0).sum()))
+        loss_cls = bce.sum() / n_pos_cls
 
         # obj: balanced BCE over all anchors - pos=1 on o2o positives, neg=0 on
         # background, each normalized by its own count. The obj branch is SEPARATE
