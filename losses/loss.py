@@ -215,11 +215,18 @@ class DetectionLoss(nn.Module):
         bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="none")
         loss_cls = (focal * bce).sum() / max(n_pos_main, 1)
 
-        # obj: full BCE over all anchors / n_anchors (small, non-dominating).
-        # Not used at inference (YOLOv10 is cls-only NMS-free); kept tiny so it
-        # does not push shared features toward "no object" and freeze the box head.
-        loss_obj = F.binary_cross_entropy_with_logits(
-            pred_obj.view(B, N), obj_target.view(B, N), reduction="sum") / max(1, B * N)
+        # obj: balanced BCE over all anchors - pos=1 on o2o positives, neg=0 on
+        # background, each normalized by its own count. The obj branch is SEPARATE
+        # from cls/box (own conv weights), so this gives it real gradient to fire
+        # on positives AND suppress background without freezing box/cls. Used at
+        # inference (score = cls * obj) as the background-suppression signal.
+        obj_logits = pred_obj.view(B, N)
+        obj_bce = F.binary_cross_entropy_with_logits(obj_logits, obj_target.view(B, N),
+                                                     reduction="none")
+        obj_pos = obj_target.view(B, N) > 0
+        n_obj_pos = max(1, int(obj_pos.sum()))
+        n_obj_neg = max(1, int((~obj_pos).sum()))
+        loss_obj = obj_bce[obj_pos].sum() / n_obj_pos + obj_bce[~obj_pos].sum() / n_obj_neg
 
         loss_box = self.box_w * loss_box / max(n_pos_main, 1)
         loss_dfl = self.dfl_w * loss_dfl / max(n_pos_main, 1)
