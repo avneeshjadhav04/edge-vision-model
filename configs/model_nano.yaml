@@ -24,7 +24,7 @@ head:
 
 loss:
   box_weight: 7.5
-  cls_weight: 0.5
+  cls_weight: 1.0              # v37: was 0.5 - positives capped at score 0.42 under focal
   dfl_weight: 1.5
   obj_weight: 1.0                # objectness BCE on main head
   o2m_topk: 10                   # top-k candidates for the one-to-many aux matcher

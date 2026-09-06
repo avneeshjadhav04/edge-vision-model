@@ -80,7 +80,7 @@ class DetectionLoss(nn.Module):
     def __init__(self, num_classes, reg_max=8, strides=(8, 16, 32),
                  box_w=7.5, cls_w=0.5, dfl_w=1.5, obj_w=1.0,
                  o2m_topk=10, alpha=0.5, beta=6.0, o2o_warmup_epochs=0, epoch=0,
-                 focal_gamma=2.0, focal_alpha=0.25):
+                 focal_gamma=2.0, focal_alpha=0.5):
         super().__init__()
         self.nc = num_classes
         self.reg_max = reg_max
@@ -269,6 +269,10 @@ class DetectionLoss(nn.Module):
         focal = alpha_t * (1 - p_t).pow(self.focal_gamma) * bce
         n_pos_cls = max(1, int((cls_target.sum(dim=2) > 0).sum()))
         loss_cls = focal.sum() / n_pos_cls
+        # v37: alpha=0.5 (symmetric) - RetinaNet's 0.25 triple-down-weights the
+        # ~50 positives vs 1950 bg on top of the 39:1 count imbalance, capping
+        # positive scores at ~0.42 (v36: nothing >0.5, mAP 0.17 despite IoU
+        # 0.579/37-50). cls_weight 0.5 -> 1.0 so positives can saturate.
 
         # obj: balanced BCE over all anchors - pos=1 on o2o positives, neg=0 on
         # background, each normalized by its own count. The obj branch is SEPARATE
