@@ -256,7 +256,8 @@ class DetectionLoss(nn.Module):
                 # quality they don't have.
                 lbl = glabels[fg_gts]
                 q = align_norm[fg_gts, fg_anchors].clamp(0, 1)   # detached
-                cls_target[bi, fg_anchors, lbl] = q
+                # dtype guard: cls_target mirrors pred_cls (Half under AMP)
+                cls_target[bi, fg_anchors, lbl] = q.to(cls_target.dtype)
                 obj_target[bi, fg_anchors, 0] = 1.0
 
         # cls: balanced BCE over ALL anchors with quality-aware soft targets
