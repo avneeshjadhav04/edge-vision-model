@@ -203,12 +203,17 @@ class DetectionLoss(nn.Module):
                     aux_gts = gt_idx_a[aux_anchors]
                     cls_target[bi, aux_anchors, glabels[aux_gts]] = 1.0
 
-        # cls: plain BCE over all anchors / num_pos. With the dense o2m positives
-        # (~500) the pos:bg ratio is ~1:3, so background gets real suppression
-        # gradient (focal down-weighted easy bg to ~0 -> 1974/2000 fired in v23).
+        # cls: YOLOv8-style focal BCE over all anchors / num_pos, with the DENSE
+        # o2m positives (~500). Focal down-weights easy background so positives
+        # fire, while still penalizing hard negatives (bg that fires). Plain BCE
+        # with dense pos gave bg too much weight (cls=14 flat, box frozen in v24);
+        # focal with only 50 o2o pos gave bg ~0 gradient (1764/2000 fired in v22).
         logits = pred_cls.view(B, N, self.nc)
-        bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="sum")
-        loss_cls = bce / max(n_pos_main, 1)
+        p = torch.sigmoid(logits)
+        pt = torch.where(cls_target > 0, p, 1 - p)
+        focal = (1 - pt) ** self.focal_gamma
+        bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="none")
+        loss_cls = (focal * bce).sum() / max(n_pos_main, 1)
 
         # obj: full BCE over all anchors / n_anchors (small, non-dominating).
         # Not used at inference (YOLOv10 is cls-only NMS-free); kept tiny so it
