@@ -32,12 +32,12 @@ def evaluate_overfit(model, ds, device, img_size=320):
         img, tgt = ds[i]
         x, t2 = et(img, tgt)  # returns tensor + rescale info
         with torch.no_grad():
-            # YOLOv8-style: score = cls only. Plain BCE cls /num_pos (with dense
-            # o2m positives) trains cls to fire on objects AND suppress background.
-            # The obj branch is not used at inference (it never separates, stuck
-            # at sigmoid~0.5, and would cap all scores).
+            # v34: score = cls * obj. The balanced-BCE obj branch separates cleanly
+            # (v33: pos p~0.9 / bg p~0.15) while cls-only still fires on ~79% of
+            # anchors (cls*obj cuts fired anchors ~8x on noise inputs). The obj
+            # head is trained (own branch) and must be used at inference.
             res = model.predict(x[None].to(device), score_thresh=0.01, max_det=100,
-                                use_obj=False)
+                                use_obj=True)
         r, pw, ph = [float(v) for v in t2["rescale"]]
         bb = res[0]["pred_boxes"].clone()
         if bb.numel():
