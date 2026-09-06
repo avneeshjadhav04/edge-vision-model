@@ -195,23 +195,18 @@ class DetectionLoss(nn.Module):
                 lbl = glabels[fg_gts]
                 cls_target[bi, fg_mask, lbl] = 1.0
                 obj_target[bi, fg_mask, 0] = 1.0
-                # YOLOv10: the o2o head's cls is also supervised by the DENSE o2m
-                # assignment (pos_a, ~500 anchors) - not just the ~50 o2o positives.
-                # With only 50 positives the cls branch can't both fire on objects
-                # AND suppress 1950 background anchors (v22: 1764/2000 still fire).
-                # Dense positives give the branch enough signal to localize objects.
-                if pos_a.any():
-                    aux_anchors = torch.nonzero(pos_a).squeeze(1)
-                    aux_gts = gt_idx_a[aux_anchors]
-                    cls_target[bi, aux_anchors, glabels[aux_gts]] = 1.0
 
-        # cls: plain BCE over all anchors / num_pos (YOLOv8-style). With the dense
-        # o2m positives (~500) the pos:bg ratio is ~1:3, so background gets real
-        # suppression gradient. (Focal down-weighted easy bg to ~0 -> everything
-        # fired; v24's plain BCE failed only because aux dominated, now fixed.)
+        # cls: BCE over ONLY the o2o positives (YOLOv10). The o2o head must fire
+        # confidently on its ~50 assigned anchors; the dense o2m assignment (~500)
+        # dilutes their gradient and the background term (~1500) swamps them
+        # (v28: cls flat ~9, o2o positives never confident). No background term
+        # here - the o2o head is NMS-free, each anchor is pos or bg, and the
+        # o2m/aux head handles dense localization.
         logits = pred_cls.view(B, N, self.nc)
-        bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="sum")
-        loss_cls = bce / max(n_pos_main, 1)
+        pos_mask = cls_target > 0
+        n_pos = max(1, int(pos_mask.sum()))
+        bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="none")
+        loss_cls = bce[pos_mask].sum() / n_pos
 
         # obj: balanced BCE over all anchors - pos=1 on o2o positives, neg=0 on
         # background, each normalized by its own count. The obj branch is SEPARATE
