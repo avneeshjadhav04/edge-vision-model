@@ -253,26 +253,22 @@ class DetectionLoss(nn.Module):
                 cls_target[bi, fg_anchors, lbl] = 1.0
                 obj_target[bi, fg_anchors, 0] = 1.0
 
-        # cls: focal BCE over ALL anchors / n_pos (v36). Empirical map across
-        # v32-v35 (all with fixed CIoU + stable o2o + no iou-gate):
-        #   pos-only BCE  -> bg unsupervised, all 2000 fire
-        #   balanced      -> bg 23% grad mass, 1578 fire
-        #   BCE(all)/n_pos-> bg swamps positives, cls 2.8 flat, nothing fires
-        # Focal (gamma=2, alpha=0.25, YOLOv8) is the standard resolution: easy
-        # bg anchors are down-weighted ~100x while hard negatives keep gradient,
-        # so positives stay learnable and background still gets suppressed.
+        # cls: balanced BCE over ALL anchors (v44). The v43 diagnosis: with focal
+        # (gamma=2, alpha=0.5, /n_pos) the plateau 0.83 IS the background term -
+        # 1950 bg anchors at p~0.1 contribute (0.9)^2 * 0.105 each; positives get
+        # near-zero pressure once p>0.5 and never saturate (eval max 0.61, only
+        # 13/1974 anchors >0.5 vs 50 GTs). Balanced normalization gives positives
+        # a dedicated 1/n_pos pressure to reach p->1 while bg /n_neg suppresses;
+        # the earlier balanced run (v33, 1578 fire) was on the PRE-v38 OOD eval
+        # view - in-distribution it should calibrate cleanly.
         logits = pred_cls.view(B, N, self.nc)
-        p = torch.sigmoid(logits)
         bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="none")
-        p_t = p * cls_target + (1 - p) * (1 - cls_target)
-        alpha_t = self.focal_alpha * cls_target + (1 - self.focal_alpha) * (1 - cls_target)
-        focal = alpha_t * (1 - p_t).pow(self.focal_gamma) * bce
-        n_pos_cls = max(1, int((cls_target.sum(dim=2) > 0).sum()))
-        loss_cls = focal.sum() / n_pos_cls
-        # v37: alpha=0.5 (symmetric) - RetinaNet's 0.25 triple-down-weights the
-        # ~50 positives vs 1950 bg on top of the 39:1 count imbalance, capping
-        # positive scores at ~0.42 (v36: nothing >0.5, mAP 0.17 despite IoU
-        # 0.579/37-50). cls_weight 0.5 -> 1.0 so positives can saturate.
+        anchor_is_pos = cls_target.sum(dim=2) > 0                       # (B,N)
+        pos_mask = anchor_is_pos.unsqueeze(2).expand_as(cls_target)
+        n_pos = max(1, int(anchor_is_pos.sum()) * self.nc)
+        n_neg = max(1, int((~anchor_is_pos).sum()) * self.nc)
+        loss_cls = (bce[pos_mask].sum() / n_pos +
+                    bce[~pos_mask].sum() / n_neg)
 
         # obj: balanced BCE over all anchors - pos=1 on o2o positives, neg=0 on
         # background, each normalized by its own count. The obj branch is SEPARATE
