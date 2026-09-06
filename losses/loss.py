@@ -257,18 +257,17 @@ class DetectionLoss(nn.Module):
                 d_raw = pb[fg_anchors].view(-1, 4, self.reg_max)
                 loss_dfl = loss_dfl + sum(dfl_loss(d_raw[:, k], dist_t[:, k], self.reg_max)
                                           for k in range(4))
-                # one-to-one main head: HIERARCHICAL cls targets (v51). The o2o
-                # pick (one anchor per object, the anchor inference relies on)
-                # gets hard 1.0; dense o2m candidates get IoU-soft targets
-                # (0.3-0.9, they SHOULD score below the pick); background 0.
-                # v50 showed dense-only IoU targets cap positive scores at ~0.72
-                # (calibration bound) leaving bg anchors at 0.6 competitive per
-                # class. The hard pick gives per-object anchors an unambiguous
-                # top score; dense candidates still provide the 10x calibration
-                # signal that fixed bg suppression (v49/v50).
+                # one-to-one main head: dense o2m cls supervision (v52 = v50
+                # recipe, the best gate config so far: mAP 0.5601). Every o2m
+                # candidate anchor gets target = detached IoU(main pred box,
+                # GT); background 0. (v51's hard 1.0 on o2o picks REGRESSED to
+                # 0.4953 - it re-inflated bg competition: 109 fires, obj max
+                # 0.9 on noise. The IoU target hierarchy is what calibrates.)
                 lbl = glabels[fg_gts]
+                with torch.no_grad():
+                    q = bbox_iou(mgb, mpb).clamp(0, 1)
                 # dtype guard: cls_target mirrors pred_cls (Half under AMP)
-                cls_target[bi, fg_anchors, lbl] = 1.0
+                cls_target[bi, fg_anchors, lbl] = q.to(cls_target.dtype)
                 obj_target[bi, fg_anchors, 0] = 1.0
 
         # cls: balanced BCE over ALL anchors with quality-aware soft targets

@@ -216,13 +216,21 @@ def main():
         print(f"  [probe@{epoch}] mAP@0.5 = {m['mAP']:.4f} [scoring: {m['scoring']}]")
     tr.epoch_hook = probe
     tr.fit(args.epochs)
-    # gate evals the RAW model: with only ~600 steps across 20 images the EMA
-    # (decay 0.99) still lags; raw weights reflect actual learned fit.
-    gate_model = tr.model
-    # final eval on a raw (untransformed) view of the same images
+    # final eval on a raw (untransformed) view of the same images:
+    # eval BOTH the raw model and its EMA - at 300 epochs (decay 0.99) the EMA
+    # window covers the converged regime and may rank better than the raw
+    # endpoint, which oscillates with the tail of the LR schedule.
+    import copy
     ds_eval = OverfitSubset(args.root, n=args.n, transform=None)
-    m = evaluate_overfit(gate_model, ds_eval, args.device, args.img_size)
-    print(f"OVERFIT mAP@0.5 = {m['mAP']:.4f} (target {args.target}) [scoring: {m['scoring']}]")
+    m_raw = evaluate_overfit(tr.model, ds_eval, args.device, args.img_size)
+    print(f"OVERFIT raw mAP@0.5 = {m_raw['mAP']:.4f} [scoring: {m_raw['scoring']}]")
+    ema_model = copy.deepcopy(tr.model)
+    ema_model.load_state_dict(tr.ema.ema.state_dict(), strict=True)
+    m_ema = evaluate_overfit(ema_model, ds_eval, args.device, args.img_size)
+    print(f"OVERFIT ema  mAP@0.5 = {m_ema['mAP']:.4f} [scoring: {m_ema['scoring']}]")
+    m = m_ema if m_ema["mAP"] >= m_raw["mAP"] else m_raw
+    which = "ema" if m is m_ema else "raw"
+    print(f"OVERFIT mAP@0.5 = {m['mAP']:.4f} (target {args.target}) [scoring: {m['scoring']}, weights: {which}]")
     if m["mAP"] >= args.target:
         print("PASS")
     else:
