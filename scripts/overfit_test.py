@@ -4,6 +4,7 @@ Usage:
     python -m scripts.overfit_test --root ./datasets/VOC --epochs 300 --device cuda
 """
 import argparse
+import math
 import os
 import sys
 
@@ -61,12 +62,25 @@ def evaluate_overfit(model, ds, device, img_size=320):
                                anchors, strides)
             max_xy = float(anchors.max()) * 2
             boxes = boxes.clamp(0, max_xy)
-            cls_s = torch.cat(cls_flat, 1).sigmoid()
-            obj_s = torch.cat(obj_flat, 1).sigmoid()
-            sc_cls = cls_s.amax(-1)
-            sc_prod = (cls_s * obj_s).amax(-1)
+            cls_s = torch.cat(cls_flat, 1).sigmoid()          # (B,N,nc)
+            obj_s = torch.cat(obj_flat, 1).sigmoid()          # (B,N,1)
+            # DFL-entropy quality (v48): memorized/assigned anchors have sharp
+            # per-side distributions; texture-firing bg anchors stay near
+            # uniform (log(reg_max) = 2.77 @16 bins). v47 diag: ent 1.2-2.1 for
+            # true anchors vs 2.73 for unassigned. Eval-only signal.
+            ent_flat = []
+            for (bx, cl, ob) in raw:
+                B, _, H, W = bx.shape
+                d = bx.view(B, 4, model.reg_max, H, W).softmax(2)
+                ent_map = -(d * (d + 1e-9).log()).sum(2).mean(1)   # (B,H,W)
+                ent_flat.append(ent_map.reshape(B, H * W))
+            ent = torch.cat(ent_flat, 1)                      # (B,N)
+            quality = (1 - ent / math.log(model.reg_max)).clamp(0, 1)   # (B,N)
+            quality = quality.unsqueeze(-1)                   # (B,N,1) broadcast over nc
+            sc_cls = cls_s.amax(-1)                           # (B,N)
+            sc_prod = (cls_s * obj_s * quality).amax(-1)      # (B,N)
             lbl_cls = cls_s.argmax(-1)
-            lbl_prod = (cls_s * obj_s).argmax(-1)
+            lbl_prod = (cls_s * obj_s * quality).argmax(-1)
 
         r, pw, ph = [float(v) for v in t2["rescale"]]
         per_sc = []
