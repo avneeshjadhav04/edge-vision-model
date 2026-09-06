@@ -113,6 +113,7 @@ class DetectionLoss(nn.Module):
         loss_cls = pred_box.new_zeros(())
         loss_aux = pred_box.new_zeros(())
         n_pos_main = 0
+        n_pos_aux = 0
 
         for bi in range(B):
             gt = targets[bi]
@@ -146,6 +147,7 @@ class DetectionLoss(nn.Module):
             gt_idx_a[pos_a] = top_idx[pos_a].clamp(0, M - 1)
 
             if pos_a.any():
+                n_pos_aux += int(pos_a.sum())
                 apb = ab_dec[pos_a]
                 agb = gboxes[gt_idx_a[pos_a]]
                 loss_aux = loss_aux + (1 - bbox_iou(agb, apb)).sum()
@@ -233,7 +235,10 @@ class DetectionLoss(nn.Module):
         loss_cls = self.cls_w * loss_cls
         loss_obj = self.obj_w * loss_obj
         n_imgs_pos = max(1, sum(1 for t in targets if t["boxes"].numel() > 0))
-        loss_aux = self.box_w * loss_aux / n_imgs_pos
+        # aux is summed over ~500 dense positives - normalize by its own count so
+        # it does not dwarf the o2o head (v26: aux=100 vs box=3.1, 30x, starving
+        # the o2o head that is used at inference).
+        loss_aux = self.box_w * loss_aux / max(n_pos_aux, 1)
 
         tot = loss_box + loss_dfl + loss_cls + loss_obj + loss_aux
         stats = {"loss": tot.detach(), "box": loss_box.detach(), "dfl": loss_dfl.detach(),
