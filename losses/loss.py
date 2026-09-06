@@ -194,20 +194,24 @@ class DetectionLoss(nn.Module):
                 cls_target[bi, fg_mask, lbl] = 1.0
                 obj_target[bi, fg_mask, 0] = 1.0
 
-        # cls: standard YOLOv8/v10 BCE over ALL anchors (pos=1, bg=0), normalized
-        # by num_pos. Positives dominate (50*~3.5/50=3.5) while bg contributes a
-        # small nonzero term (1950*~0.0008/50=0.03) that grows if the model fires
-        # on background - so positives get full weight AND bg is suppressed.
-        # (Normalizing by B*N starves pos; normalizing pos/neg separately zeroes bg.)
+        # cls: YOLOv8-style focal BCE over all anchors, normalized by num_pos.
+        # Focal down-weights easy examples: confident positives (sigmoid->1) and
+        # confident background (sigmoid->0) get ~0 loss, so the few o2o positives
+        # get real gradient while false background fires are penalized. (Full
+        # BCE/num_pos gave background 39x the positive weight -> nothing fired;
+        # pos-only BCE never suppressed background -> everything fired.)
         logits = pred_cls.view(B, N, self.nc)
-        bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="sum")
-        loss_cls = bce / max(n_pos_main, 1)
+        p = torch.sigmoid(logits)
+        pt = torch.where(cls_target > 0, p, 1 - p)
+        focal = (1 - pt) ** self.focal_gamma
+        bce = F.binary_cross_entropy_with_logits(logits, cls_target, reduction="none")
+        loss_cls = (focal * bce).sum() / max(n_pos_main, 1)
 
-        # obj: same YOLOv8-style BCE over all anchors / num_pos (not used at
-        # inference - YOLOv10 is cls-only NMS-free - but keeps the branch trained).
-        obj_bce = F.binary_cross_entropy_with_logits(
-            pred_obj.view(B, N), obj_target.view(B, N), reduction="sum")
-        loss_obj = obj_bce / max(n_pos_main, 1)
+        # obj: full BCE over all anchors / n_anchors (small, non-dominating).
+        # Not used at inference (YOLOv10 is cls-only NMS-free); kept tiny so it
+        # does not push shared features toward "no object" and freeze the box head.
+        loss_obj = F.binary_cross_entropy_with_logits(
+            pred_obj.view(B, N), obj_target.view(B, N), reduction="sum") / max(1, B * N)
 
         loss_box = self.box_w * loss_box / max(n_pos_main, 1)
         loss_dfl = self.dfl_w * loss_dfl / max(n_pos_main, 1)
