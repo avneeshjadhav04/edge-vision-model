@@ -273,18 +273,15 @@ class DetectionLoss(nn.Module):
                     q = bbox_iou(mgb, mpb).clamp(0, 1)
                 # dtype guard: cls_target mirrors pred_cls (Half under AMP)
                 cls_target[bi, fg_anchors, lbl] = q.to(cls_target.dtype)
-                # v57: sharpen the o2o positives - these anchors OWN their GT
-                # (mutual exclusion), so they should saturate at 1.0 instead of
-                # tracking the IoU of the current (early-training) box. v55 gate
-                # maxed at score 0.48 with zero preds >0.5: IoU-soft targets cap
-                # confidence at the model's current box quality. Dense o2m
-                # anchors keep IoU-soft targets (they are NOT exclusive);
-                # duplicates at eval are now suppressed (v56).
-                cls_target[bi, fg_anchors, lbl] = torch.maximum(
-                    q.to(cls_target.dtype),
-                    torch.ones_like(q.to(cls_target.dtype)) * 0.85)
-                obj_target[bi, fg_anchors, 0] = torch.maximum(
-                    obj_target[bi, fg_anchors, 0], q.to(obj_target.dtype).clamp(min=0.85))
+                # v60: hard 1.0 on the o2o picks (TOOD/YOLOv10-style). v57's
+                # 0.85 floor lifted the gate 0.8545 -> 0.8884; the IoU-soft cap
+                # was the confidence ceiling. The o2o anchor owns the GT
+                # exclusively, so its target should saturate at 1.0. v51's hard
+                # 1.0 REGRESSED, but that was pre-dense-obj (v55) and pre-dup-
+                # suppression (v56) - bg re-inflation is now contained.
+                # Dense o2m candidates keep IoU-soft targets (not exclusive).
+                cls_target[bi, fg_anchors, lbl] = torch.ones_like(q.to(cls_target.dtype))
+                obj_target[bi, fg_anchors, 0] = torch.ones_like(q.to(obj_target.dtype))
 
         # cls: balanced BCE over ALL anchors with quality-aware soft targets
         # (v45). v44 (hard 1.0 targets, balanced BCE) converged (cls 0.048, pos
