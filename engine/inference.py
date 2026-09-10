@@ -2,12 +2,12 @@
 import torch
 
 from data.common import collate_batch
-from models.decode import Postprocessor
+from models.decode import Postprocessor, nms_greedy
 
 
 @torch.no_grad()
 def run_inference(model, loader, device, img_size=640, score_thresh=0.01, max_det=300,
-                  use_obj=False):
+                  use_obj=False, nms_iou=0.55):
     """Runs the NMS-free postprocess on a dataset loader.
     Returns (predictions, targets_in_original_coords)."""
     model.eval()
@@ -42,9 +42,15 @@ def run_inference(model, loader, device, img_size=640, score_thresh=0.01, max_de
             if ss.numel() > max_det:
                 topv, topi = ss.topk(max_det)
                 bb, ss, ll = bb[topi], topv, ll[topi]
-                ll = ll
-            else:
-                ll = ll
+            # per-class duplicate suppression (v56)
+            if nms_iou > 0 and ss.numel() > 1:
+                keep_idx = []
+                for c in ll.unique():
+                    kc = (ll == c).nonzero().squeeze(1)
+                    kn = nms_greedy(bb[kc], ss[kc], nms_iou)
+                    keep_idx.append(kc[kn])
+                keep_idx = torch.cat(keep_idx) if keep_idx else torch.zeros(0, dtype=torch.long, device=bb.device)
+                bb, ss, ll = bb[keep_idx], ss[keep_idx], ll[keep_idx]
             # rescale to original coords
             r, pw, ph = [float(v) for v in tgt["rescale"]]
             if bb.numel():

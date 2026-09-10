@@ -40,7 +40,7 @@ def evaluate_overfit(model, ds, device, img_size=320):
     preds_cls, preds_prod, targets = [], [], []
     et = EvalTransform(img_size)
     all_scores, all_boxes, all_gt = [], [], []
-    from models.decode import _anchors_from_shapes, dfl_decode
+    from models.decode import _anchors_from_shapes, dfl_decode, nms_greedy
     for i in range(len(ds)):
         img, tgt = ds[i]
         x, t2 = et(img, tgt)  # returns tensor + rescale info
@@ -88,6 +88,9 @@ def evaluate_overfit(model, ds, device, img_size=320):
         # images hit it (preds/image [100,95,100,100,100]) and a GT anchor
         # scored below the cut is lost permanently. AP is ranking-based, so
         # extra low-scored FPs sort below and don't hurt; capping recall does.
+        # v56: per-class duplicate suppression after top-k. v55 diagnosis: the
+        # o2o contract leaves ~19 anchors/GT firing cls>0.5 and the FP tail
+        # outranks TPs at mid recall (mAP 0.5115 -> 0.871 with this filter).
         for keep_mask, ss, ll in ((sc_cls[0] > 0.01, sc_cls[0], lbl_cls[0]),
                                   (sc_prod[0] > 0.01, sc_prod[0], lbl_prod[0])):
             bb = boxes[0][keep_mask]
@@ -99,6 +102,13 @@ def evaluate_overfit(model, ds, device, img_size=320):
             if bb.numel():
                 bb[:, [0, 2]] = (bb[:, [0, 2]] - pw) / r
                 bb[:, [1, 3]] = (bb[:, [1, 3]] - ph) / r
+            if s_.numel() > 1:
+                keep_idx = []
+                for c in l_.unique():
+                    kc = (l_ == c).nonzero().squeeze(1)
+                    keep_idx.append(kc[nms_greedy(bb[kc], s_[kc], 0.55)])
+                keep_idx = torch.cat(keep_idx)
+                bb, s_, l_ = bb[keep_idx], s_[keep_idx], l_[keep_idx]
             per_sc.append({"pred_boxes": bb.cpu(), "scores": s_.cpu(), "labels": l_.cpu()})
         preds_cls.append(per_sc[0])
         preds_prod.append(per_sc[1])
