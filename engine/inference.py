@@ -7,7 +7,7 @@ from models.decode import Postprocessor, nms_greedy
 
 @torch.no_grad()
 def run_inference(model, loader, device, img_size=640, score_thresh=0.01, max_det=300,
-                  use_obj=False, nms_iou=0.55):
+                  use_obj=False, nms_iou=0.45):
     """Runs the NMS-free postprocess on a dataset loader.
     Returns (predictions, targets_in_original_coords)."""
     model.eval()

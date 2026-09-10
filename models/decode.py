@@ -62,7 +62,7 @@ class Postprocessor:
     """
 
     def __init__(self, num_classes, strides=(8, 16, 32), reg_max=16, score_thresh=0.25,
-                 max_det=300, use_obj=False, nms_iou=0.55):
+                 max_det=300, use_obj=False, nms_iou=0.45):
         self.nc = num_classes
         self.strides = strides
         self.reg_max = reg_max

@@ -106,7 +106,7 @@ def evaluate_overfit(model, ds, device, img_size=320):
                 keep_idx = []
                 for c in l_.unique():
                     kc = (l_ == c).nonzero().squeeze(1)
-                    keep_idx.append(kc[nms_greedy(bb[kc], s_[kc], 0.55)])
+                    keep_idx.append(kc[nms_greedy(bb[kc], s_[kc], 0.45)])
                 keep_idx = torch.cat(keep_idx)
                 bb, s_, l_ = bb[keep_idx], s_[keep_idx], l_[keep_idx]
             per_sc.append({"pred_boxes": bb.cpu(), "scores": s_.cpu(), "labels": l_.cpu()})
