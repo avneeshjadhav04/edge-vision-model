@@ -273,8 +273,18 @@ class DetectionLoss(nn.Module):
                     q = bbox_iou(mgb, mpb).clamp(0, 1)
                 # dtype guard: cls_target mirrors pred_cls (Half under AMP)
                 cls_target[bi, fg_anchors, lbl] = q.to(cls_target.dtype)
+                # v57: sharpen the o2o positives - these anchors OWN their GT
+                # (mutual exclusion), so they should saturate at 1.0 instead of
+                # tracking the IoU of the current (early-training) box. v55 gate
+                # maxed at score 0.48 with zero preds >0.5: IoU-soft targets cap
+                # confidence at the model's current box quality. Dense o2m
+                # anchors keep IoU-soft targets (they are NOT exclusive);
+                # duplicates at eval are now suppressed (v56).
+                cls_target[bi, fg_anchors, lbl] = torch.maximum(
+                    q.to(cls_target.dtype),
+                    torch.ones_like(q.to(cls_target.dtype)) * 0.85)
                 obj_target[bi, fg_anchors, 0] = torch.maximum(
-                    obj_target[bi, fg_anchors, 0], q.to(obj_target.dtype))
+                    obj_target[bi, fg_anchors, 0], q.to(obj_target.dtype).clamp(min=0.85))
 
         # cls: balanced BCE over ALL anchors with quality-aware soft targets
         # (v45). v44 (hard 1.0 targets, balanced BCE) converged (cls 0.048, pos
