@@ -70,6 +70,10 @@ def main():
     ap.add_argument("--save-dir", default=None)
     ap.add_argument("--init-from", default=None, help="weights to init from (VOC->COCO)")
     ap.add_argument("--resume", default=None)
+    ap.add_argument("--mosaic", type=float, default=None,
+                    help="override train.mosaic probability (v64: 0.0 = train on the "
+                         "letterboxed view the eval/deploy view uses; the mosaic view "
+                         "fit IoU 0.95 in-train but transferred at recall@0.5 ~0.4)")
     args = ap.parse_args()
 
     dcfg = load_config(args.dataset)
@@ -79,8 +83,11 @@ def main():
     bs = args.batch_size or dcfg.get("batch_size", 32)
     save_dir = args.save_dir or f"runs/{args.dataset}"
 
+    mosaic_p = mcfg["train"].get("mosaic", 1.0)
+    if args.mosaic is not None:
+        mosaic_p = args.mosaic
     train_tf = TrainTransform(
-        args.img_size, mosaic_p=mcfg["train"].get("mosaic", 1.0),
+        args.img_size, mosaic_p=mosaic_p,
         scale=mcfg["train"].get("scale_jitter", 0.5),
         translate=mcfg["train"].get("translate", 0.1),
         fliplr=mcfg["train"].get("fliplr", 0.5),
