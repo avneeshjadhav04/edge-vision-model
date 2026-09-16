@@ -38,15 +38,17 @@ def make_loader(ds, n_limit, batch_size=8, workers=4):
                       num_workers=workers, collate_fn=collate_batch)
 
 
-def recall_stats(preds, tgts):
-    """Score-agnostic detection quality: per GT, best same-class pred IoU (+score).
+def recall_stats(preds, tgts, iou_thr=0.5):
+    """Score-agnostic detection quality + confidence-vs-location cross-check.
 
-    recall@0.5 with NO threshold/NMS says whether the network places boxes on
-    objects at all; the score attached there says whether ranking can find them.
+    recall@0.5 (no threshold/NMS) says whether the network places boxes on
+    objects at all; mean best-IoU of CONFIDENT preds (score>0.5) says whether
+    confident boxes land on real objects (0.07 mAP + high scores => confidently
+    wrong locations, vs low scores => ranking problem).
     """
     ious_all, scores_at = [], []
-    n_gt = 0
-    n_hit = 0
+    n_gt, n_hit = 0, 0
+    conf_ious, conf_n = [], 0
     for pred, tgt in zip(preds, tgts):
         gb, gl = tgt["boxes"], tgt["labels"]
         pb, pl, ps = pred["pred_boxes"], pred["labels"], pred["scores"]
@@ -55,21 +57,31 @@ def recall_stats(preds, tgts):
             same = pl == lbl
             if not same.any() or not pb[same].numel():
                 continue
-            iou = bbox_iou(box[None, :].float(), pb[same].float())[0]
+            iou = bbox_iou(box[None, :].float(), pb[same].float())   # (K,)
             j = int(iou.argmax())
             best = float(iou[j])
             ious_all.append(best)
             scores_at.append(float(ps[same][j]))
             if best > iou_thr:
                 n_hit += 1
+        conf = ps > 0.5
+        for box_p, lbl_p, s_p in zip(pb[conf], pl[conf], ps[conf]):
+            gmask = gl == lbl_p
+            if not gmask.any() or not gb[gmask].numel():
+                continue
+            iou = bbox_iou(box_p[None, :].float(), gb[gmask].float())
+            conf_ious.append(float(iou.max()))
+            conf_n += 1
     ious_all = torch.tensor(ious_all) if ious_all else torch.zeros(0)
+    conf_mean = float(torch.tensor(conf_ious).mean()) if conf_ious else float("nan")
     return {
         "n_gt": n_gt,
         "recall@0.5": n_hit / max(1, n_gt),
-        "best-iou mean": float(ious_all.mean()) if ious_all.numel() else float("nan"),
-        "best-iou>0.5": float((ious_all > 0.5).float().mean()) if ious_all.numel() else float("nan"),
-        "score_at_best_iou(mean)": (float(torch.tensor(scores_at).mean())
-                                    if scores_at else float("nan")),
+        "best-iou>0.5 frac": float((ious_all > 0.5).float().mean()) if ious_all.numel() else float("nan"),
+        "score@bestIoU mean": (float(torch.tensor(scores_at).mean())
+                               if scores_at else float("nan")),
+        "conf>0.5 n": conf_n,
+        "conf IoU-vs-GT mean": conf_mean,
     }
 
 
@@ -92,7 +104,8 @@ def evaluate_variant(model, loader, device, use_obj, nms_iou):
     print(f"  [{tag}] mAP@0.5 = {res['mAP']:.4f} | {score_stats(preds)}")
     rec = recall_stats(preds, tgts)
     print(f"  [{tag}] recall@0.5={rec['recall@0.5']:.3f} "
-          f"(frac bestIoU>0.5 {rec['best-iou>0.5']:.3f}, score@bestIoU {rec['score_at_best_iou']:.3f})")
+          f"(bestIoU>0.5 frac {rec['best-iou>0.5 frac']:.3f}, score@bestIoU {rec['score@bestIoU mean']:.3f}, "
+          f"confN={rec['conf>0.5 n']}, confIoU {rec['conf IoU-vs-GT mean']:.3f})")
     # per-class AP for the best variant
     aps = {VOC_CLASSES[c]: round(a, 3) for c, a in res['per_class_ap'].items() if a == a}
     print(f"  [{tag}] per-class: {aps}")
